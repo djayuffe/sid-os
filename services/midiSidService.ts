@@ -225,6 +225,10 @@ export async function compileMidiToSidTrace(midiData: ArrayBuffer, options: { cl
         traceEvents.push({ cycles: Math.floor(c), reg: r, val: v & 0xFF });
     };
 
+    // MIDI has no SID master-volume equivalent. Set $D418 explicitly so the
+    // generated voice events are audible in a fresh SID register state.
+    emit(0, SID_REG.MODE_VOL, 0x0F);
+
     const handleNoteOff = (chIdx: number, note: number) => {
         const ch = channels[chIdx];
         voices.forEach((v, i) => {

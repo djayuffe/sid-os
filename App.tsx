@@ -44,6 +44,10 @@ import VWindow from './components/VWindow';
 import { DesktopIcon } from './components/DesktopIcon';
 import SidChipVisualizer from './components/SidChipVisualizer';
 import SwmSequenceEditor from './components/SwmSequenceEditor';
+import AuditMonitor from './components/AuditMonitor';
+import SwmDetailView from './components/SwmDetailView';
+import { FormatDocs } from './components/FormatDocs';
+import PhysicalSidVisualizer from './components/PhysicalSidVisualizer';
 
 // Window Manager Types
 interface WindowState {
@@ -193,6 +197,10 @@ const App: React.FC = () => {
               case 'MASTERING': title = "MASTERING_CONSOLE"; icon = <Sliders className="w-4 h-4"/>; w = 900; h = 600; break;
               case 'CHIP': title = "SILICON_DIE_VIEW"; icon = <Cpu className="w-4 h-4"/>; break;
               case 'LOG': title = "SYSTEM_LOG"; icon = <Terminal className="w-4 h-4"/>; w = 600; h = 400; break;
+              case 'AUDIT': title = "SID_BUS_AUDIT"; icon = <Terminal className="w-4 h-4"/>; w = 920; h = 680; break;
+              case 'PROJECT': title = "SWM_PROJECT_DETAIL"; icon = <Layers className="w-4 h-4"/>; w = 980; h = 720; break;
+              case 'DOCS': title = "FORMAT_REFERENCE"; icon = <Terminal className="w-4 h-4"/>; w = 920; h = 720; break;
+              case 'PHYSICAL': title = "PHYSICAL_SID_SIMULATION"; icon = <Cpu className="w-4 h-4"/>; w = 960; h = 680; break;
           }
 
           const newWindow: WindowState = {
@@ -463,6 +471,7 @@ const App: React.FC = () => {
       activePlayer.liveWrite(3, (instrument.pulseWidth >> 8) & 0x0F);
       activePlayer.liveWrite(5, (instrument.attack << 4) | instrument.decay);
       activePlayer.liveWrite(6, (instrument.sustain << 4) | instrument.release);
+      activePlayer.liveWrite(24, 0x0F);
       activePlayer.liveWrite(4, instrument.waveform & 0xFE);
       window.setTimeout(() => activePlayer.liveWrite(4, instrument.waveform | 0x01), 12);
       window.setTimeout(() => activePlayer.liveWrite(4, instrument.waveform & 0xFE), 360);
@@ -529,6 +538,14 @@ const App: React.FC = () => {
               />;
           case 'LOG':
               return <SystemLog />;
+          case 'AUDIT':
+              return <AuditMonitor player={player} isPlaying={isPlaying} />;
+          case 'PROJECT':
+              return <SwmDetailView project={project || undefined} onUpdateProject={setProject} />;
+          case 'DOCS':
+              return <div className="h-full overflow-y-auto bg-slate-950 p-6"><FormatDocs /></div>;
+          case 'PHYSICAL':
+              return <PhysicalSidVisualizer player={player} isPlaying={isPlaying} model={sidModel} trace={traceData} visualLead={0} interpolatedCycles={player?.getEstimatedCycles() || 0} />;
           default: return null;
       }
   };
@@ -557,6 +574,10 @@ const App: React.FC = () => {
                   <DesktopIcon label="Mastering" icon={<Sliders className="w-6 h-6"/>} onClick={() => openWindow('MASTERING')} />
                   <DesktopIcon label="System" icon={<Box className="w-6 h-6"/>} onClick={() => openWindow('LOGO')} />
                   <DesktopIcon label="Chip Die" icon={<Cpu className="w-6 h-6"/>} onClick={() => openWindow('CHIP')} />
+                  <DesktopIcon label="Physical SID" icon={<Cpu className="w-6 h-6"/>} onClick={() => openWindow('PHYSICAL')} />
+                  <DesktopIcon label="SID Audit" icon={<Terminal className="w-6 h-6"/>} onClick={() => openWindow('AUDIT')} />
+                  <DesktopIcon label="Project" icon={<Layers className="w-6 h-6"/>} onClick={() => openWindow('PROJECT')} />
+                  <DesktopIcon label="Format Docs" icon={<Terminal className="w-6 h-6"/>} onClick={() => openWindow('DOCS')} />
                   <DesktopIcon label="Artwork" icon={<ImageIcon className="w-6 h-6"/>} onClick={() => openWindow('ALBUM')} />
                   <DesktopIcon label="Logs" icon={<Terminal className="w-6 h-6"/>} onClick={() => openWindow('LOG')} />
               </div>

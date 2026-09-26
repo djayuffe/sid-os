@@ -515,6 +515,11 @@ export class SidPlayer {
   async setData(ev: SidEvent[], clk?: number) {
       await this.readyPromise; 
       const sorted = [...ev].sort((a,b) => a.cycles - b.cycles);
+      // Trace formats commonly omit $D418 when it is implicit in a frame dump.
+      // A fresh worklet starts at volume zero, so establish a sensible SID
+      // default only when the trace does not set volume at startup itself.
+      const hasInitialVolume = sorted.some(event => event.reg === SID_REG.MODE_VOL && event.cycles === 0);
+      if (!hasInitialVolume) sorted.unshift({ cycles: 0, reg: SID_REG.MODE_VOL, val: 0x0F });
       this.clk = clk || CLOCK_PAL; 
       this.node?.port.postMessage({ type: 'DATA', payload: { events: sorted, clock: this.clk } }); 
   }
