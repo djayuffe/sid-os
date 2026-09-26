@@ -1,6 +1,7 @@
 
 import React, { useState, useRef, useEffect, memo } from 'react';
 import { X, Minus, Square, Maximize2, Copy } from 'lucide-react';
+import { SystemLogger } from '../services/Logger';
 
 interface VWindowProps {
     id: string;
@@ -69,7 +70,7 @@ const VWindow: React.FC<VWindowProps> = memo(({
         if (!windowRef.current) return;
         if (!document.fullscreenElement) {
             windowRef.current.requestFullscreen().catch(err => {
-                console.error(`FS_FAIL: ${err.message}`);
+                SystemLogger.log('Window', 'Browser fullscreen request was rejected.', 'warn', err);
             });
         } else {
             document.exitFullscreen();

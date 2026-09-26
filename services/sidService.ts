@@ -2,9 +2,10 @@
 import { ParsedTrace, SidEvent, MasteringParams, MixerParams } from '../types';
 import { MASTERING_DSP_CODE } from './masteringDsp';
 import { generateHifiWorkletCode } from './hifiSidService';
+import { SystemLogger } from './Logger';
 
 /**
- * SID_STATION_PRO v20.0 - STABLE_CORE
+ * SID OS playback core
  * - Fixed AudioWorklet Race Conditions
  * - Added Register Constants
  * - Improved Cycle Timing
@@ -122,7 +123,7 @@ export function parseTraceFile(content: string): ParsedTrace | null {
             events: events
         };
     } catch (e) {
-        console.error("Trace parse error", e);
+        SystemLogger.log('Trace parser', 'Unable to parse trace data.', 'error', e);
         return null;
     }
 }

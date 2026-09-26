@@ -27,7 +27,6 @@
     "noEmit": true
   },
   "exclude": [
-    "components/drsid_machine_patch/**",
-    "services/sid/**"
+    "components/drsid_machine_patch/**"
   ]
 }

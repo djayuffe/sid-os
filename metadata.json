@@ -1,5 +1,5 @@
 {
-  "name": "SID OS v3.6 bra",
-  "description": "A web-based Commodore 64 SID trace player that parses JSONL dumps, visualizes register states, and synthesizes audio. This is dev/exp version",
+  "name": "SID OS",
+  "description": "A browser-based Commodore 64 SID trace workstation with playback, visualisation, tracker conversion, synthesis, and export tools.",
   "requestFramePermissions": []
 }

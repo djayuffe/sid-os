@@ -30,10 +30,6 @@ class LoggerService {
       this.logs.shift();
     }
 
-    // Console mirror
-    const style = level === 'error' ? 'color: red' : level === 'warn' ? 'color: orange' : 'color: cyan';
-    // console.log(`%c[${component}] ${message}`, style, data || '');
-
     this.notify(entry);
   }
 

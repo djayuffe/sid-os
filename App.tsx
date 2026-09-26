@@ -13,6 +13,7 @@ import { traceToTrackerProject } from './services/trackerService';
 import { C64Config } from './components/sid/SidTypes';
 import { OfflineSidRenderer } from './services/OfflineSidRenderer';
 import { updateProjectInstrument, createNewInstrument, deleteProjectInstrument, transposePattern, clearPattern, updatePatternCell } from './services/editorService';
+import { SystemLogger } from './services/Logger';
 
 // Icons
 import { 
@@ -230,7 +231,7 @@ const App: React.FC = () => {
           setPlayer(p);
           return p;
       } catch (err) {
-          console.error("Audio Engine Init Failed:", err);
+          SystemLogger.log('Audio', 'Audio engine initialization failed.', 'error', err);
           return null;
       }
   };
@@ -301,7 +302,7 @@ const App: React.FC = () => {
                   setProject(proj);
                   if (proj.instruments.length > 0) setSelectedInstId(proj.instruments[0].id);
               } catch (err) {
-                  console.warn("Failed to generate project structure from trace", err);
+                  SystemLogger.log('Tracker', 'Could not generate a tracker project from the trace.', 'warn', err);
               }
 
               // Auto-open relevant window
@@ -320,7 +321,7 @@ const App: React.FC = () => {
               }
           }
       } catch (err) {
-          console.error("Load Error:", err);
+          SystemLogger.log('Loader', 'Could not load the selected file.', 'error', err);
           alert("Failed to load file. Check console for details.");
       } finally {
           setIsProcessing(false);
