@@ -65,6 +65,7 @@ export const renderProjectToTrace = (project: TrackerProject, clock: number): Pa
     const pushFrame = (frameInRow: number, globalCycle: number) => {
         const regs = new Array(25).fill(0);
         
+        const triggeredChannels = new Set<number>();
         channels.forEach((ch, i) => {
             const off = i * 7;
             const inst = project.instruments.find(ins => ins.id === ch.activeInstId);
@@ -106,6 +107,7 @@ export const renderProjectToTrace = (project: TrackerProject, clock: number): Pa
                 // --- MICRO-TIMING GATE LOGIC ---
                 // Instead of holding Gate OFF for a full frame, we schedule sub-cycle events.
                 if (ch.trigger) {
+                    triggeredChannels.add(i);
                     // 1. Queue Gate OFF at current cycle (Reset Envelope)
                     events.push({ cycles: globalCycle, reg: off + 4, val: wf & 0xFE });
                     
@@ -158,25 +160,7 @@ export const renderProjectToTrace = (project: TrackerProject, clock: number): Pa
             // but duplications at T=0 might be messy.
             
             // Standard approach:
-            if (!isCtrl) {
-                events.push({ cycles: globalCycle, reg: r, val: regs[r] });
-            } else {
-                // For control registers, if we didn't do a special trigger, push standard state.
-                // We need to know if we did a trigger.
-                // Actually, since we pushed explicit events for trigger, we can skip pushing this register
-                // for this cycle if we want to be clean, OR push it. 
-                // Since `trigger` is false now, we don't know. 
-                // Let's just push it. The T+45 event will win. 
-                // The T+0 OFF event pushed earlier will win against this T+0 ON event?
-                // It depends on sort order.
-                // To guarantee correctness, we should only push standard events if NO trigger happened.
-                // However, refactoring strictly for that is complex.
-                // The visualizer uses `frames`, the audio uses `events`.
-                // The `events` array handles playback.
-                // If we simply don't push REG 4, 11, 18 here at all, and rely on `trigger` logic?
-                // No, because continuous gate changes need updates.
-                
-                // Let's assume standard behavior:
+            if (!isCtrl || !triggeredChannels.has(chIdx)) {
                 events.push({ cycles: globalCycle, reg: r, val: regs[r] });
             }
         }

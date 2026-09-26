@@ -2,6 +2,12 @@
 
 All notable changes to SID OS are documented here.
 
+## Unreleased
+
+### Changed
+
+- Added GNU GPL-3.0-only licensing and copyright attribution for Ulf Bertilsson.
+
 ## [1.0.0] — 2026-09-26
 
 ### Added

@@ -46,56 +46,59 @@ function parseSmfLocal(midiData: ArrayBuffer) {
     const view = new DataView(midiData);
     const b = new Uint8Array(midiData);
     if (b.length < 14 || view.getUint32(0) !== 0x4d546864) {
-        SystemLogger.log('MidiParser', "Invalid MIDI Header", 'error');
-        return { events: [], tempos: [], ppq: 480 };
+        throw new Error('Invalid Standard MIDI file header');
     }
+    const headerLength = view.getUint32(4);
+    if (headerLength < 6 || headerLength + 8 > b.length) {
+        throw new Error('Invalid Standard MIDI file header length');
+    }
+    const format = view.getUint16(8);
     const trackCount = view.getUint16(10);
     const timeDiv = view.getUint16(12);
-    let ppq = 480;
-    if ((timeDiv & 0x8000) === 0) ppq = timeDiv & 0x7FFF; 
+    if ((timeDiv & 0x8000) !== 0) {
+        throw new Error('SMPTE-timed MIDI files are not supported');
+    }
+    const ppq = timeDiv & 0x7FFF;
+    if (format > 2 || trackCount === 0 || ppq === 0 || (format === 0 && trackCount !== 1)) {
+        throw new Error('MIDI file has no tracks or an invalid tick division');
+    }
     
     const events: any[] = [];
     const tempos: any[] = [];
-    let ptr = 14;
-
-    const readVLQ = () => {
-        let val = 0;
-        let shift = 0;
-        while (true) {
-            if (ptr >= b.length) break;
-            const byte = b[ptr++];
-            val = val | ((byte & 0x7f) << shift);
-            shift += 7;
-            if ((byte & 0x80) === 0) break;
-        }
-        // VLQ in SMF is Big Endian actually...
-        // Let's correct standard VLQ reading:
-        return 0; // Placeholder, corrected below
-    };
+    let ptr = headerLength + 8;
 
     // Corrected VLQ Reader (Big Endian)
-    const readVLQ_BE = () => {
+    const readVLQ_BE = (end: number) => {
         let val = 0;
-        while (true) {
-            if (ptr >= b.length) break;
+        for (let count = 0; count < 4; count++) {
+            if (ptr >= end) throw new Error('Truncated MIDI variable-length value');
             const byte = b[ptr++];
             val = (val << 7) | (byte & 0x7f);
-            if ((byte & 0x80) === 0) break;
+            if ((byte & 0x80) === 0) return val;
         }
-        return val;
+        throw new Error('Invalid MIDI variable-length value');
+    };
+
+    const readDataByte = (end: number) => {
+        if (ptr >= end) throw new Error('Truncated MIDI channel message');
+        const value = b[ptr++];
+        if (value >= 0x80) throw new Error('Invalid MIDI data byte');
+        return value;
     };
 
     for (let t = 0; t < trackCount; t++) {
-        while (ptr < b.length - 4 && view.getUint32(ptr) !== 0x4d54726b) ptr++; 
-        if (ptr >= b.length - 4) break;
+        if (ptr + 8 > b.length || view.getUint32(ptr) !== 0x4d54726b) {
+            throw new Error(`Expected MIDI track ${t + 1}`);
+        }
         ptr += 4; 
         const len = view.getUint32(ptr); ptr += 4;
         const end = ptr + len;
+        if (end > b.length) throw new Error(`MIDI track ${t + 1} exceeds file length`);
         let tick = 0; 
         let runningStatus = 0;
 
         while (ptr < end) {
-            const delta = readVLQ_BE();
+            const delta = readVLQ_BE(end);
             tick += delta;
             if (ptr >= end) break;
             
@@ -106,27 +109,39 @@ function parseSmfLocal(midiData: ArrayBuffer) {
             if (status >= 0x80) {
                 ptr++;
                 if (status < 0xF0) runningStatus = status;
+                else runningStatus = 0;
                 type = status & 0xF0;
                 ch = status & 0x0F;
             } else {
+                if (runningStatus === 0) throw new Error('MIDI data byte encountered without running status');
                 status = runningStatus;
                 type = status & 0xF0;
                 ch = status & 0x0F;
             }
 
-            if (type === 0x80) { const n = b[ptr++]; const v = b[ptr++]; events.push({ tick, kind: 'off', ch, note: n, vel: v }); }
-            else if (type === 0x90) { const n = b[ptr++]; const v = b[ptr++]; events.push({ tick, kind: v > 0 ? 'on' : 'off', ch, note: n, vel: v }); }
-            else if (type === 0xB0) { const cc = b[ptr++]; const val = b[ptr++]; events.push({ tick, kind: 'cc', ch, cc, val }); }
-            else if (type === 0xC0) { const prog = b[ptr++]; events.push({ tick, kind: 'pc', ch, program: prog }); }
-            else if (type === 0xE0) { const l = b[ptr++]; const m = b[ptr++]; events.push({ tick, kind: 'pb', ch, val: ((m << 7) | l) - 8192 }); }
+            if (type === 0x80) { const n = readDataByte(end); const v = readDataByte(end); events.push({ tick, kind: 'off', ch, note: n, vel: v }); }
+            else if (type === 0x90) { const n = readDataByte(end); const v = readDataByte(end); events.push({ tick, kind: v > 0 ? 'on' : 'off', ch, note: n, vel: v }); }
+            else if (type === 0xA0) { readDataByte(end); readDataByte(end); }
+            else if (type === 0xB0) { const cc = readDataByte(end); const val = readDataByte(end); events.push({ tick, kind: 'cc', ch, cc, val }); }
+            else if (type === 0xC0) { const prog = readDataByte(end); events.push({ tick, kind: 'pc', ch, program: prog }); }
+            else if (type === 0xD0) { readDataByte(end); }
+            else if (type === 0xE0) { const l = readDataByte(end); const m = readDataByte(end); events.push({ tick, kind: 'pb', ch, val: ((m << 7) | l) - 8192 }); }
             else if (status === 0xFF) { 
-                const mt = b[ptr++]; const ml = readVLQ_BE();
+                if (ptr >= end) throw new Error('Truncated MIDI meta event');
+                const mt = b[ptr++]; const ml = readVLQ_BE(end);
+                if (ptr + ml > end) throw new Error('MIDI meta event exceeds its track');
                 if (mt === 0x51 && ml === 3) {
                     const mpqn = (b[ptr] << 16) | (b[ptr + 1] << 8) | b[ptr + 2];
                     tempos.push({ tick, mpqn });
                 }
                 ptr += ml;
-            } else if (status === 0xF0 || status === 0xF7) { const len = readVLQ_BE(); ptr += len; }
+            } else if (status === 0xF0 || status === 0xF7) {
+                const eventLength = readVLQ_BE(end);
+                if (ptr + eventLength > end) throw new Error('MIDI SysEx event exceeds its track');
+                ptr += eventLength;
+            } else {
+                throw new Error(`Unsupported MIDI status byte 0x${status.toString(16)}`);
+            }
         }
     }
     return { events: events.sort((a:any, b:any) => a.tick - b.tick), tempos: tempos.sort((a:any, b:any) => a.tick - b.tick), ppq };
@@ -147,8 +162,11 @@ class VoiceState {
 
 export async function compileMidiToSidTrace(midiData: ArrayBuffer, options: { clock?: number; filename?: string }): Promise<ParsedTrace> {
     const { events, ppq, tempos } = parseSmfLocal(midiData);
+    if (!events.some(event => event.kind === 'on' || event.kind === 'off')) {
+        throw new Error('MIDI file contains no note events to convert');
+    }
     const clock = options.clock || CLOCK_PAL;
-    const fps = 50; 
+    const fps = clock >= 1_000_000 ? 60 : 50;
     const cyclesPerFrame = Math.floor(clock / fps);
     const MAX_SIM_STEP = 2500; 
 
@@ -187,6 +205,10 @@ export async function compileMidiToSidTrace(midiData: ArrayBuffer, options: { cl
     }
 
     const totalDurationCycles = cycleEvents.length > 0 ? cycleEvents[cycleEvents.length-1].absCycles + clock : clock;
+    const maxDurationCycles = clock * 600;
+    if (!Number.isSafeInteger(totalDurationCycles) || totalDurationCycles > maxDurationCycles) {
+        throw new Error('MIDI import exceeds the 10-minute safety limit');
+    }
     
     const channels = Array.from({length: 16}, () => new ChannelState());
     const voices = Array.from({length: 3}, () => new VoiceState());

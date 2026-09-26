@@ -90,6 +90,8 @@ const VWindow: React.FC<VWindowProps> = memo(({
                 transform: isMaximized ? 'none' : `translate3d(${pos.x}px, ${pos.y}px, 0)`,
                 width: isMaximized ? '100%' : size.w, 
                 height: isMaximized ? '100%' : size.h, 
+                maxWidth: isMaximized ? '100%' : 'calc(100vw - 48px)',
+                maxHeight: isMaximized ? '100%' : 'calc(100vh - 112px)',
                 zIndex: isMaximized ? 1000 : zIndex,
                 willChange: (isDragging || isResizing) ? 'transform, width, height' : 'auto'
             }}
@@ -113,22 +115,22 @@ const VWindow: React.FC<VWindowProps> = memo(({
                     </span>
                 </div>
                 <div className="flex items-center gap-1.5" onMouseDown={e => e.stopPropagation()}>
-                    <button onClick={toggleBrowserFullscreen} className="p-1.5 hover:bg-cyan-500/20 rounded-lg text-slate-500 hover:text-cyan-400 transition-all">
+                    <button aria-label="Enter browser fullscreen" title="Browser fullscreen" onClick={toggleBrowserFullscreen} className="p-1.5 hover:bg-cyan-500/20 rounded-lg text-slate-500 hover:text-cyan-400 transition-all">
                         <Maximize2 className="w-3 h-3"/>
                     </button>
-                    <button onClick={() => onMinimize(id)} className="p-1.5 hover:bg-white/10 rounded-lg text-slate-500 hover:text-slate-300 transition-all">
+                    <button aria-label="Minimize window" title="Minimize" onClick={() => onMinimize(id)} className="p-1.5 hover:bg-white/10 rounded-lg text-slate-500 hover:text-slate-300 transition-all">
                         <Minus className="w-3 h-3"/>
                     </button>
-                    <button onClick={() => onMaximize(id)} className="p-1.5 hover:bg-white/10 rounded-lg text-slate-500 hover:text-slate-300 transition-all">
+                    <button aria-label={isMaximized ? 'Restore window' : 'Maximize window'} title={isMaximized ? 'Restore' : 'Maximize'} onClick={() => onMaximize(id)} className="p-1.5 hover:bg-white/10 rounded-lg text-slate-500 hover:text-slate-300 transition-all">
                         {isMaximized ? <Copy className="w-3 h-3 rotate-180"/> : <Square className="w-3 h-3"/>}
                     </button>
-                    <button onClick={() => onClose(id)} className="p-1.5 hover:bg-red-500/30 rounded-lg text-slate-500 hover:text-red-400 transition-all ml-1">
+                    <button aria-label="Close window" title="Close" onClick={() => onClose(id)} className="p-1.5 hover:bg-red-500/30 rounded-lg text-slate-500 hover:text-red-400 transition-all ml-1">
                         <X className="w-3 h-3"/>
                     </button>
                 </div>
             </div>
 
-            <div className="flex-1 overflow-hidden relative bg-[#010204]/60">
+            <div className="flex-1 overflow-auto relative bg-[#05070c]/95">
                 {children}
             </div>
 

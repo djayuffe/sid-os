@@ -8,7 +8,7 @@ export const exportTraceToJson = (traceData: ParsedTrace | null) => {
         header: {
             ...traceData.header,
             exportedAt: new Date().toISOString(),
-            generator: "SID_STATION_PRO_CORE"
+            generator: "SID_OS"
         },
         frames: traceData.frames.map(f => Array.from(f)),
         events: traceData.events

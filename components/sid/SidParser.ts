@@ -3,6 +3,9 @@ import { SidHeader } from './SidTypes';
 import { SystemLogger } from '../../services/Logger';
 
 export function parseSidHeader(data: ArrayBuffer): { header: SidHeader; sidData: Uint8Array } {
+  if (data.byteLength < 0x76) {
+    throw new Error('Invalid SID file: header is shorter than the mandatory PSID/RSID fields');
+  }
   const view = new DataView(data);
   const rawData = new Uint8Array(data);
   const magicId = String.fromCharCode(...rawData.slice(0, 4));
@@ -23,6 +26,20 @@ export function parseSidHeader(data: ArrayBuffer): { header: SidHeader; sidData:
   const songs = view.getUint16(14, false);
   const startSong = view.getUint16(16, false);
   const speed = view.getUint32(18, false);
+
+  if (version < 1 || version > 4) {
+    throw new Error(`Unsupported SID version: ${version}`);
+  }
+  const minimumHeaderSize = version >= 2 ? 0x7C : 0x76;
+  if (rawData.length < minimumHeaderSize) {
+    throw new Error(`Invalid SID file: version ${version} header is truncated`);
+  }
+  if (dataOffset < minimumHeaderSize || dataOffset >= rawData.length) {
+    throw new Error('Invalid SID file: data offset is outside the file');
+  }
+  if (songs === 0 || startSong === 0 || startSong > songs) {
+    throw new Error('Invalid SID file: song count or start song is invalid');
+  }
 
   SystemLogger.log('SidParser', `Version: ${version} | Data Offset: $${dataOffset.toString(16)}`, 'debug');
 
@@ -96,9 +113,10 @@ export function parseSidHeader(data: ArrayBuffer): { header: SidHeader; sidData:
       const modelBits2 = (flags >> 6) & 0x03;
       // If bits are 00 (unknown), it defaults to SID 1 model, but we check address existence
       const addrByte = rawData[0x7A];
-      if (addrByte >= 0x42 && (addrByte & 1) === 0) { // Simple validity check
+      const mappedAddress = mapSidAddress(addrByte);
+      if (mappedAddress !== 0 && !sidAddresses.includes(mappedAddress)) {
           sidModels.push(modelBits2 === 1 ? '6581' : modelBits2 === 2 ? '8580' : sidModels[0]);
-          sidAddresses.push(mapSidAddress(addrByte));
+          sidAddresses.push(mappedAddress);
       }
   }
 
@@ -106,9 +124,10 @@ export function parseSidHeader(data: ArrayBuffer): { header: SidHeader; sidData:
   if (version >= 3) {
       const modelBits3 = (flags >> 8) & 0x03;
       const addrByte = rawData[0x7B];
-      if (addrByte >= 0x42 && (addrByte & 1) === 0) {
+      const mappedAddress = mapSidAddress(addrByte);
+      if (mappedAddress !== 0 && !sidAddresses.includes(mappedAddress)) {
           sidModels.push(modelBits3 === 1 ? '6581' : modelBits3 === 2 ? '8580' : sidModels[0]);
-          sidAddresses.push(mapSidAddress(addrByte));
+          sidAddresses.push(mappedAddress);
       }
   }
 
@@ -127,6 +146,10 @@ export function parseSidHeader(data: ArrayBuffer): { header: SidHeader; sidData:
     loadAddress = memoryData[0] | (memoryData[1] << 8);
     memoryData = memoryData.slice(2);
     SystemLogger.log('SidParser', `Load Address derived from data: $${loadAddress.toString(16)}`, 'info');
+  }
+
+  if (memoryData.length === 0 || loadAddress + memoryData.length > 0x10000) {
+    throw new Error('Invalid SID file: C64 program data is empty or exceeds address space');
   }
 
   // Handle Init Address

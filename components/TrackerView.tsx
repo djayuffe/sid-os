@@ -2,6 +2,7 @@
 import React, { memo, useRef, useEffect, useMemo, useState } from 'react';
 import { ParsedTrace, TrackerProject, EditorCursor } from '../types';
 import { getNoteName, generateWaveformPoints, SidPlayer } from '../services/sidService';
+import { useTrackerInput } from '../services/inputService';
 import { Hash } from 'lucide-react';
 
 // --- HELPERS ---
@@ -146,12 +147,24 @@ interface TrackerViewProps {
   voiceMask: [boolean, boolean, boolean];
   onToggleVoice: (i: number) => void;
   showHex: boolean;
+  step: number;
+  onEdit: (cursor: EditorCursor, value: string) => void;
 }
 
-const TrackerView: React.FC<TrackerViewProps> = memo(({ trace, player, project, clock, cursor, onCursorMove, voiceMask, onToggleVoice, showHex }) => {
+const TrackerView: React.FC<TrackerViewProps> = memo(({ trace, player, project, clock, cursor, onCursorMove, voiceMask, onToggleVoice, showHex, step, onEdit }) => {
     const [currentFrame, setCurrentFrame] = useState(0);
     const containerRef = useRef<HTMLDivElement>(null);
     const ROW_HEIGHT = 18; // Dense layout
+
+    useTrackerInput({
+        enabled: Boolean(project),
+        cursor,
+        setCursor: onCursorMove,
+        onEdit,
+        step: Math.max(0, Math.min(16, step)),
+        patternLen: 64,
+        onSetNoteLength: () => undefined
+    });
 
     useEffect(() => {
         let raf = 0;
@@ -176,7 +189,11 @@ const TrackerView: React.FC<TrackerViewProps> = memo(({ trace, player, project, 
     
     // Viewport Rendering
     const speed = Math.max(1, project?.frameSpeed || 1);
-    const centerRow = Math.floor(currentFrame / speed);
+    const playbackRow = Math.floor(currentFrame / speed);
+    // While stopped, centre the grid on the edit cursor instead of frame zero.
+    const centerRow = project && !player?.isPlaying
+        ? (cursor.patternIdx * 64) + cursor.row
+        : playbackRow;
     const range = 24; // Number of rows to render above/below center
     const rows = [];
 
@@ -261,11 +278,12 @@ const TrackerView: React.FC<TrackerViewProps> = memo(({ trace, player, project, 
             <div className="h-6 bg-[#0b0d14] border-t border-white/10 flex items-center px-4 text-[9px] justify-between text-slate-500 font-bold">
                 <div className="flex gap-4">
                     <span className="text-cyan-600">POS: {toHex(centerRow, 4)}</span>
-                    <span>SPD: {project?.frameSpeed || 1}</span>
+                     <span>SPD: {project?.frameSpeed || 1}</span>
+                     <span>STEP: {step}</span>
                 </div>
                 <div className="flex gap-4">
                      <span>MODE: {showHex ? 'HEXADECIMAL' : 'MUSICAL'}</span>
-                     <span>{project ? 'PROJECT MODE' : 'TRACE MODE'}</span>
+                     <span>{project ? 'PROJECT MODE · KEYS ENABLED' : 'TRACE MODE'}</span>
                 </div>
             </div>
         </div>

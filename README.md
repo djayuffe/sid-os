@@ -93,4 +93,6 @@ Credentials, local environments, dependencies, build output, coverage, and local
 
 ## License
 
-No license was supplied with the original source archive. Treat the code and included assets as all-rights-reserved unless the project owner adds a license.
+Copyright (C) 2026 Ulf Bertilsson.
+
+SID OS is licensed under the [GNU General Public License v3.0 only](LICENSE). You may copy, modify, and redistribute the project under the GPL-3.0 terms; redistributed derivatives must remain available under the same license. See [LICENSE](LICENSE) for the complete text.

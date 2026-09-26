@@ -3,6 +3,8 @@
   "private": true,
   "version": "1.0.0",
   "description": "Browser-based Commodore 64 SID trace workstation, synthesizer, and tracker toolkit.",
+  "author": "Ulf Bertilsson",
+  "license": "GPL-3.0-only",
   "homepage": "https://github.com/djayuffe/sid-os#readme",
   "repository": {
     "type": "git",

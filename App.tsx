@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { SidPlayer, parseTraceFile, CLOCK_PAL, CLOCK_NTSC } from './services/sidService';
+import { SidPlayer, parseTraceFile, CLOCK_PAL, CLOCK_NTSC, midiNoteToFreq } from './services/sidService';
 import { SidComposerService } from './services/sidComposerService';
 import { generateMidiFile } from './services/midiExportService';
 import { exportTraceToJson, exportProjectToJson } from './services/jsonExportService';
@@ -12,8 +12,9 @@ import { compileMidiToSidTrace } from './services/midiSidService';
 import { traceToTrackerProject } from './services/trackerService';
 import { C64Config } from './components/sid/SidTypes';
 import { OfflineSidRenderer } from './services/OfflineSidRenderer';
-import { updateProjectInstrument, createNewInstrument, deleteProjectInstrument, transposePattern, clearPattern, updatePatternCell } from './services/editorService';
+import { updateProjectInstrument, createNewInstrument, deleteProjectInstrument, transposePattern, clearPattern, updatePatternCell, updatePatternCellHex, updateOrderList, insertSequenceStep, deleteSequenceStep, setSequenceLoopPoint } from './services/editorService';
 import { SystemLogger } from './services/Logger';
+import { renderProjectToTrace, validateProject } from './services/projectLoaderService';
 
 // Icons
 import { 
@@ -42,6 +43,7 @@ import PatternToolsModal from './components/PatternToolsModal';
 import VWindow from './components/VWindow';
 import { DesktopIcon } from './components/DesktopIcon';
 import SidChipVisualizer from './components/SidChipVisualizer';
+import SwmSequenceEditor from './components/SwmSequenceEditor';
 
 // Window Manager Types
 interface WindowState {
@@ -78,7 +80,7 @@ const App: React.FC = () => {
   
   // Visuals State
   const [vizMode, setVizMode] = useState<'STANDARD' | 'VECTOR' | 'FLUX'>('STANDARD');
-  const [crtEnabled, setCrtEnabled] = useState(true);
+  const [crtEnabled, setCrtEnabled] = useState(false);
   const [showHex, setShowHex] = useState(true);
   const [volume, setVolume] = useState(0.4); 
   const [luminosity, setLuminosity] = useState(1.2);
@@ -139,6 +141,22 @@ const App: React.FC = () => {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const downloadBlob = useCallback((blob: Blob, filename: string) => {
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+      window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  }, []);
+
+  const exportBaseName = useCallback(() => {
+      const sourceName = traceData?.header.originalFilename || traceData?.header.song || 'sid_os_export';
+      return sourceName.replace(/\.[^/.]+$/, '').replace(/[^a-z0-9-_]/gi, '_').toLowerCase() || 'sid_os_export';
+  }, [traceData]);
+
   // --- Window Manager Functions ---
 
   const focusWindow = useCallback((id: string) => {
@@ -164,6 +182,7 @@ const App: React.FC = () => {
           
           switch(type) {
               case 'TRACKER': title = "PROTRACKER_V3"; icon = <Grid className="w-4 h-4"/>; w = 1000; h = 700; break;
+              case 'SEQUENCE': title = "SEQUENCE_EDITOR"; icon = <Layers className="w-4 h-4"/>; w = 520; h = 640; break;
               case 'PIANO': title = "PIANO_ROLL"; icon = <Music className="w-4 h-4"/>; w = 900; h = 500; break;
               case 'INSTRUMENTS': title = "INSTRUMENT_LAB"; icon = <Piano className="w-4 h-4"/>; w = 950; h = 650; break;
               case 'ARP': title = "ARP_SYNTHESIZER"; icon = <Activity className="w-4 h-4"/>; w = 1100; h = 700; break;
@@ -184,8 +203,8 @@ const App: React.FC = () => {
               zIndex: nextZIndex + 1,
               minimized: false,
               maximized: false,
-              x: 100 + (prev.length * 30),
-              y: 80 + (prev.length * 30),
+              x: 24 + ((prev.length % 6) * 20),
+              y: 48 + ((prev.length % 6) * 20),
               w, h
           };
           
@@ -239,6 +258,12 @@ const App: React.FC = () => {
   const handleFileLoad = async (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
       if (!file) return;
+      const maxImportBytes = 16 * 1024 * 1024;
+      if (file.size > maxImportBytes) {
+          SystemLogger.log('Loader', 'Import rejected: files larger than 16 MiB are not supported.', 'error');
+          e.target.value = '';
+          return;
+      }
       
       const fileName = file.name.toLowerCase();
       const rawName = file.name;
@@ -246,10 +271,21 @@ const App: React.FC = () => {
 
       try {
           let parsed: ParsedTrace | null = null;
+          let loadedProject: TrackerProject | null = null;
 
           if (fileName.endsWith('.json') || fileName.endsWith('.jsonl')) {
               const text = await file.text();
-              parsed = parseTraceFile(text);
+              try {
+                  const json = JSON.parse(text);
+                  if (Array.isArray(json.patterns) || Array.isArray(json.instruments) || Array.isArray(json.subtunes)) {
+                      loadedProject = validateProject(json);
+                      parsed = renderProjectToTrace(loadedProject, clockFreq);
+                  } else {
+                      parsed = parseTraceFile(text);
+                  }
+              } catch {
+                  parsed = parseTraceFile(text);
+              }
               if (parsed && parsed.header) {
                   parsed.header.originalFilename = rawName;
               }
@@ -257,6 +293,9 @@ const App: React.FC = () => {
           else if (fileName.endsWith('.sid')) {
               const buffer = await file.arrayBuffer();
               const { header, sidData } = parseSidHeader(buffer);
+              if (header.sidCount > 1) {
+                  SystemLogger.log('Loader', 'Multi-SID file detected; this importer currently converts the primary SID chip only.', 'warn');
+              }
               
               if (header.isNtsc) setClockFreq(CLOCK_NTSC);
               else setClockFreq(CLOCK_PAL);
@@ -296,13 +335,18 @@ const App: React.FC = () => {
           if (parsed) {
               setTraceData(parsed);
               
-              // Auto-generate project structure for editing
-              try {
-                  const proj = await traceToTrackerProject(parsed);
-                  setProject(proj);
-                  if (proj.instruments.length > 0) setSelectedInstId(proj.instruments[0].id);
-              } catch (err) {
-                  SystemLogger.log('Tracker', 'Could not generate a tracker project from the trace.', 'warn', err);
+              if (loadedProject) {
+                  setProject(loadedProject);
+                  setSelectedInstId(loadedProject.instruments[0]?.id || 1);
+              } else {
+                  // Auto-generate project structure for editing.
+                  try {
+                      const proj = await traceToTrackerProject(parsed);
+                      setProject(proj);
+                      if (proj.instruments.length > 0) setSelectedInstId(proj.instruments[0].id);
+                  } catch (err) {
+                      SystemLogger.log('Tracker', 'Could not generate a tracker project from the trace.', 'warn', err);
+                  }
               }
 
               // Auto-open relevant window
@@ -319,12 +363,14 @@ const App: React.FC = () => {
               if (p) {
                   p.setData(parsed.events, parsed.header.clock || clockFreq);
               }
+          } else {
+              SystemLogger.log('Loader', 'Import failed: the file did not contain supported trace data.', 'error');
           }
       } catch (err) {
-          SystemLogger.log('Loader', 'Could not load the selected file.', 'error', err);
-          alert("Failed to load file. Check console for details.");
+          SystemLogger.log('Loader', 'File loading failed. Open System Log for technical details.', 'error', err);
       } finally {
           setIsProcessing(false);
+          e.target.value = '';
       }
   };
 
@@ -355,12 +401,72 @@ const App: React.FC = () => {
       }
   };
 
-  // ... (Export functions removed for brevity, assume they exist) ...
   const onExportJsonWithMeta = () => { if(traceData) exportTraceToJson({...traceData, header: {...traceData.header, originalFilename: traceData.header.originalFilename }}); };
   const onExportProject = async () => { if(traceData) exportProjectToJson(project || await traceToTrackerProject(traceData)); };
-  const onExportSwm = () => { if(project) { const b = generateSwmFile(project); /* download logic */ } };
-  const onExportWav = async () => { if(traceData) { setIsProcessing(true); try { const b = await OfflineSidRenderer.render(traceData, masteringParams, mixerParams, sidModel); /* download */ } finally { setIsProcessing(false); } } };
-  const onExportSid = () => { if(traceData) { const b = SidComposerService.compile(traceData, sidModel); /* download */ } };
+  const onExportSwm = () => {
+      if (!project) return SystemLogger.log('Export', 'SWM export requires a generated tracker project.', 'warn');
+      downloadBlob(new Blob([generateSwmFile(project)], { type: 'application/octet-stream' }), `${exportBaseName()}.swm`);
+  };
+  const onExportWav = async () => {
+      if (!traceData) return;
+      setIsProcessing(true);
+      try {
+          downloadBlob(await OfflineSidRenderer.render(traceData, masteringParams, mixerParams, sidModel), `${exportBaseName()}.wav`);
+      } catch (err) {
+          SystemLogger.log('Export', 'WAV render failed.', 'error', err);
+      } finally {
+          setIsProcessing(false);
+      }
+  };
+  const onExportSid = () => {
+      if (!traceData) return;
+      try {
+          downloadBlob(SidComposerService.compile(traceData, sidModel), `${exportBaseName()}.sid`);
+      } catch (err) {
+          SystemLogger.log('Export', 'SID export failed.', 'error', err);
+      }
+  };
+  const onExportMidi = (bpm: number, ppq: number, duration: 'smart' | 'raw' | '1/4' | '1/8' | '1/16' | '1/32', useProject: boolean, channels: [boolean, boolean, boolean]) => {
+      if (!traceData) return;
+      try {
+          const source = useProject && project ? renderProjectToTrace(project, clockFreq) : traceData;
+          downloadBlob(new Blob([generateMidiFile(source, { bpm, ppq, duration, channels })], { type: 'audio/midi' }), `${exportBaseName()}.mid`);
+          setShowMidiExport(false);
+      } catch (err) {
+          SystemLogger.log('Export', 'MIDI export failed.', 'error', err);
+      }
+  };
+
+  const editTrackerCell = useCallback((target: EditorCursor, value: string) => {
+      setProject(previous => {
+          if (!previous) return previous;
+          const patternId = previous.subtunes[0]?.orderList[target.patternIdx];
+          if (patternId === undefined) return previous;
+          if (value.startsWith('HEX:')) {
+              return updatePatternCellHex(previous, patternId, target.row, target.channel, target.column, value.slice(4));
+          }
+          const changes = target.column === 0 ? { note: value } :
+              target.column === 1 ? { inst: Number.parseInt(value, 16) || 0 } :
+              target.column === 2 ? { vol: value } :
+              target.column === 3 ? { cmd: value } : { val: value };
+          return updatePatternCell(previous, patternId, target.row, target.channel, changes);
+      });
+  }, []);
+
+  const previewInstrument = useCallback(async (instrument: TrackerProject['instruments'][number], note = 60) => {
+      const activePlayer = player || await initPlayer();
+      if (!activePlayer) return;
+      const frequency = midiNoteToFreq(note, clockFreq);
+      activePlayer.liveWrite(0, frequency & 0xFF);
+      activePlayer.liveWrite(1, (frequency >> 8) & 0xFF);
+      activePlayer.liveWrite(2, instrument.pulseWidth & 0xFF);
+      activePlayer.liveWrite(3, (instrument.pulseWidth >> 8) & 0x0F);
+      activePlayer.liveWrite(5, (instrument.attack << 4) | instrument.decay);
+      activePlayer.liveWrite(6, (instrument.sustain << 4) | instrument.release);
+      activePlayer.liveWrite(4, instrument.waveform & 0xFE);
+      window.setTimeout(() => activePlayer.liveWrite(4, instrument.waveform | 0x01), 12);
+      window.setTimeout(() => activePlayer.liveWrite(4, instrument.waveform & 0xFE), 360);
+  }, [player, clockFreq]);
 
   // Render App Content based on Window Type
   const renderAppContent = (type: string) => {
@@ -372,8 +478,12 @@ const App: React.FC = () => {
                       cursor={cursor} onCursorMove={setCursor} voiceMask={voiceMask} 
                       onToggleVoice={(i) => { const n = [...voiceMask] as [boolean,boolean,boolean]; n[i] = !n[i]; setVoiceMask(n); player?.setVoiceMask(n); }}
                       showHex={showHex}
+                      step={editorStep}
+                      onEdit={editTrackerCell}
                   />
               ) : <div className="flex h-full items-center justify-center text-slate-500 font-mono">NO DATA LOADED</div>;
+          case 'SEQUENCE':
+              return project ? <SwmSequenceEditor project={project} activeStep={cursor.patternIdx} onUpdateStep={(step, patternId) => setProject(previous => previous ? updateOrderList(previous, step, patternId) : previous)} onInsert={(step) => setProject(previous => previous ? insertSequenceStep(previous, step) : previous)} onDelete={(step) => setProject(previous => previous ? deleteSequenceStep(previous, step) : previous)} onSetLoop={(step) => setProject(previous => previous ? setSequenceLoopPoint(previous, step) : previous)} onSeek={(frame) => setCursor(current => ({ ...current, patternIdx: Math.floor(frame / 64), row: frame % 64 }))} /> : <div className="flex h-full items-center justify-center text-slate-500 font-mono">NO PROJECT DATA</div>;
           case 'PIANO':
               return project ? (
                   <PianoRoll
@@ -392,7 +502,7 @@ const App: React.FC = () => {
                   <ProtrackerInstEditor 
                       instruments={project.instruments} selectedId={selectedInstId} onSelect={setSelectedInstId}
                       onUpdate={(id, changes) => setProject(prev => prev ? updateProjectInstrument(prev, id, changes) : null)}
-                      onTest={() => {}} onCreate={() => setProject(prev => prev ? createNewInstrument(prev) : null)}
+                      onTest={previewInstrument} onCreate={() => setProject(prev => prev ? createNewInstrument(prev) : null)}
                       onDelete={(id) => setProject(prev => prev ? deleteProjectInstrument(prev, id) : null)}
                   />
               ) : <div className="flex h-full items-center justify-center text-slate-500 font-mono">NO PROJECT DATA</div>;
@@ -435,9 +545,10 @@ const App: React.FC = () => {
           </div>
 
           {/* DESKTOP ICONS (LAYER 1) */}
-          <div className="absolute inset-0 z-10 p-8 flex flex-col flex-wrap gap-8 content-start pointer-events-none">
-              <div className="pointer-events-auto grid grid-cols-1 gap-6">
+          <div className="absolute inset-0 z-10 p-4 sm:p-8 pb-40 overflow-y-auto pointer-events-none">
+              <div className="pointer-events-auto grid grid-cols-2 xl:grid-cols-1 gap-3 sm:gap-5 w-fit">
                   <DesktopIcon label="Tracker" icon={<Grid className="w-6 h-6"/>} onClick={() => openWindow('TRACKER')} />
+                  <DesktopIcon label="Sequence" icon={<Layers className="w-6 h-6"/>} onClick={() => openWindow('SEQUENCE')} />
                   <DesktopIcon label="Piano Roll" icon={<Music className="w-6 h-6"/>} onClick={() => openWindow('PIANO')} />
                   <DesktopIcon label="Instruments" icon={<Piano className="w-6 h-6"/>} onClick={() => openWindow('INSTRUMENTS')} />
                   <DesktopIcon label="Arp Synth" icon={<Activity className="w-6 h-6"/>} onClick={() => openWindow('ARP')} />
@@ -508,6 +619,8 @@ const App: React.FC = () => {
 
           {showSettings && <div className="fixed inset-0 z-[6000] flex items-center justify-center bg-black/80 backdrop-blur-sm"><SettingsModal onClose={() => setShowSettings(false)} crtEnabled={crtEnabled} setCrtEnabled={setCrtEnabled} showHex={showHex} setShowHex={setShowHex} clockFreq={clockFreq} setClockFreq={setClockFreq} fpsOverride={fpsOverride} setFpsOverride={setFpsOverride} luminosity={luminosity} setLuminosity={setLuminosity} sidModel={sidModel} setSidModel={setSidModel} engineType={engineType} setEngineType={setEngineType} emulationConfig={emulationConfig} setEmulationConfig={setEmulationConfig} /></div>}
           {showHelp && <HelpModal onClose={() => setShowHelp(false)} />}
+          {showPatternTools && project && <div className="fixed inset-0 z-[6000] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm"><div className="w-full max-w-xl rounded-xl border border-cyan-500/30 bg-[#080b12] p-5 shadow-2xl"><PatternToolsModal channel={cursor.channel} onClose={() => setShowPatternTools(false)} onTranspose={(semitones, wholePattern) => setProject(previous => { if (!previous) return previous; const patternId = previous.subtunes[0]?.orderList[cursor.patternIdx]; return patternId === undefined ? previous : transposePattern(previous, patternId, cursor.channel, semitones, wholePattern); })} onClear={(wholePattern) => setProject(previous => { if (!previous) return previous; const patternId = previous.subtunes[0]?.orderList[cursor.patternIdx]; return patternId === undefined ? previous : clearPattern(previous, patternId, cursor.channel, wholePattern); })} /></div></div>}
+          {showMidiExport && traceData && <div className="fixed inset-0 z-[6000] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm"><div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-xl border border-cyan-500/30 bg-[#080b12] p-5 shadow-2xl"><MidiExportEditor initialBpm={120} initialPpq={480} initialDuration="smart" onExport={onExportMidi} onClose={() => setShowMidiExport(false)} /></div></div>}
       </div>
   );
 };

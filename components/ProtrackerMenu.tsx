@@ -51,6 +51,8 @@ const PtButton: React.FC<{ label: string, active?: boolean, onClick: (e: React.M
     <button 
         onClick={onClick} 
         disabled={disabled}
+        aria-label={label || 'Stop playback'}
+        title={label || 'Stop playback'}
         className={`
             relative h-8 px-2 flex flex-col items-center justify-center border-b transition-all active:border-b-0 active:translate-y-[0.5px] rounded
             ${active 
@@ -99,11 +101,11 @@ const ProtrackerMenu: React.FC<ProtrackerMenuProps> = (props) => {
             <div className="h-5 bg-slate-900 flex items-center justify-between px-3 text-[7px] font-mono text-slate-800">
                 <div className="flex items-center gap-2">
                     <div className={`w-1.5 h-1.5 rounded-full ${props.isPlaying ? 'bg-red-500 animate-pulse' : 'bg-slate-900'}`}></div>
-                    <span className="font-black tracking-[0.4em] uppercase">KERN_V6_DEV::<span className="text-cyan-950">HW_SYNK</span></span>
+                    <span className="font-black tracking-[0.4em] uppercase">SID_OS::<span className="text-cyan-950">AUDIO_LINK</span></span>
                 </div>
                 <div className="flex items-center gap-4">
-                    <span className="tracking-widest opacity-30">BUS_NATIVE_1.2</span>
-                    <span className={props.isPlaying ? "text-emerald-950 font-black" : "opacity-20"}>{props.isPlaying ? "LINK_SYNC_ACTIVE" : "LINK_STANDBY"}</span>
+                    <span className="tracking-widest opacity-30">WEB_AUDIO</span>
+                    <span className={props.isPlaying ? "text-emerald-950 font-black" : "opacity-20"}>{props.isPlaying ? "PLAYBACK_ACTIVE" : "READY"}</span>
                 </div>
             </div>
 
@@ -202,7 +204,6 @@ const ProtrackerMenu: React.FC<ProtrackerMenuProps> = (props) => {
                         )}
                     </div>
                     <PtButton label="CFG" icon={<Settings className="w-2.5 h-2.5"/>} onClick={props.onSettings} />
-                    <button className="h-8 w-8 flex items-center justify-center bg-red-950/20 border border-red-900/30 rounded text-red-800 hover:text-red-500 transition-colors" title="Shut Down"><Power className="w-3.5 h-3.5"/></button>
                 </PtGroup>
             </div>
         </div>

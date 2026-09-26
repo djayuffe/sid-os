@@ -226,12 +226,12 @@ const Visualizer: React.FC<VisualizerProps> = memo(({ player, isPlaying, header,
                   <Activity className="w-10 h-10 text-cyan-400 animate-pulse" />
                </div>
                <div className="flex flex-col">
-                  <span className="text-[18px] font-black text-cyan-400 tracking-[1.2em] uppercase glow-text">ULTRA_SYNC_HDR</span>
+                  <span className="text-[18px] font-black text-cyan-400 tracking-[0.7em] uppercase glow-text">SID OS</span>
                   <span className="text-[10px] text-slate-500 font-black -mt-2 tracking-[0.5em] uppercase">ANALOG_VIRTUAL_PROJECTION_V9</span>
                </div>
             </div>
             <h1 className="text-[64px] font-black text-white glow-text tracking-tighter uppercase italic truncate max-w-[800px] leading-[0.7] drop-shadow-4xl">
-                {header?.song || "HW_STATION_LINK"}
+                {header?.song || "SID OS WORKSTATION"}
             </h1>
         </div>
         <div className="absolute top-8 right-8 z-30 flex flex-col items-end pointer-events-none gap-4">

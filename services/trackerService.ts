@@ -18,20 +18,8 @@ const instrumentsMatch = (a: TrackerInstrument, b: Partial<TrackerInstrument>) =
 };
 
 const generatePatternSignature = (rows: TrackerRow[][]): string => {
-    // Collision-safe hash including pattern context
-    let hash = rows.length << 24; 
-    for (let i = 0; i < rows.length; i++) {
-        for (let j = 0; j < rows[i].length; j++) {
-            const cell = rows[i][j];
-            const noteHash = cell.note.charCodeAt(0) * 97 + cell.note.charCodeAt(1) * 89;
-            const instHash = cell.inst * 83;
-            const cmdHash = cell.cmd.charCodeAt(0) * 79;
-            const valHash = parseInt(cell.val, 16) * 73;
-            hash = ((hash << 5) - hash) + noteHash + instHash + cmdHash + valHash;
-            hash = hash | 0;
-        }
-    }
-    return hash.toString(36);
+    // Pattern deduplication must be lossless: a compact numeric hash can collide.
+    return JSON.stringify(rows);
 };
 
 const sanitizeString = (str: string, maxLen: number): string => {

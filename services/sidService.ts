@@ -102,23 +102,91 @@ export function detectVibrato(freqs: number[]): boolean {
 
 export function parseTraceFile(content: string): ParsedTrace | null {
     try {
-        const json = JSON.parse(content);
-        if (!json.frames || !Array.isArray(json.frames)) return null;
-        if (!json.header) json.header = { clock: CLOCK_PAL, song: "Unknown" };
+        let json: any;
+        try {
+            json = JSON.parse(content);
+        } catch {
+            const records = content.split(/\r?\n/).map(line => line.trim()).filter(Boolean).map(line => JSON.parse(line));
+            json = records.reduce((trace, record) => {
+                if (Array.isArray(record)) {
+                    trace.frames.push(record);
+                    return trace;
+                }
+                if (!record || typeof record !== 'object') {
+                    throw new Error('JSONL records must be objects or register arrays');
+                }
+                if (record.header && (typeof record.header !== 'object' || Array.isArray(record.header))) {
+                    throw new Error('JSONL header must be an object');
+                }
+                if (record.frames !== undefined && !Array.isArray(record.frames)) {
+                    throw new Error('JSONL frames must be an array');
+                }
+                if (record.events !== undefined && !Array.isArray(record.events)) {
+                    throw new Error('JSONL events must be an array');
+                }
+                trace.header = { ...trace.header, ...(record.header || {}) };
+                trace.frames.push(...(record.frames || (record.frame !== undefined ? [record.frame] : [])));
+                trace.events.push(...(record.events || (record.event !== undefined ? [record.event] : [])));
+                return trace;
+            }, { header: {} as Record<string, unknown>, frames: [] as unknown[], events: [] as unknown[] });
+        }
+        if (!json || typeof json !== 'object' || Array.isArray(json) || !Array.isArray(json.frames)) {
+            throw new Error('Trace data must contain a frames array');
+        }
+        if (json.frames.length === 0) throw new Error('Trace data contains no frames');
+        if (json.header !== undefined && (!json.header || typeof json.header !== 'object' || Array.isArray(json.header))) {
+            throw new Error('Trace header must be an object');
+        }
+        const header = { ...(json.header || {}), clock: Number(json.header?.clock) || CLOCK_PAL, song: String(json.header?.song || 'Unknown') };
+        if (!Number.isFinite(header.clock) || header.clock <= 0) throw new Error('Trace clock must be a positive number');
         
-        const frames = json.frames.map((f: any) => {
-            if (Array.isArray(f)) return f;
-            if (f instanceof Uint8Array) return f;
-            return Object.values(f).map(Number);
+        const frames = json.frames.map((frame: any, frameIndex: number) => {
+            const values = Array.isArray(frame) || frame instanceof Uint8Array
+                ? Array.from(frame)
+                : frame && typeof frame === 'object' ? Object.values(frame) : null;
+            if (!values || values.length < 25) {
+                throw new Error(`Trace frame ${frameIndex + 1} must contain at least 25 SID registers`);
+            }
+            return values.slice(0, 32).map((value, register) => {
+                const number = Number(value);
+                if (!Number.isInteger(number) || number < 0 || number > 255) {
+                    throw new Error(`Trace frame ${frameIndex + 1}, register ${register} is not a byte`);
+                }
+                return number;
+            });
         });
         
+        if (json.events !== undefined && !Array.isArray(json.events)) {
+            throw new Error('Trace events must be an array');
+        }
         let events = json.events;
-        if (!events || !Array.isArray(events) || events.length === 0) {
-            events = []; // Just allow empty events, player can reconstruct from frames if needed (not implemented here for brevity)
+        if (!events || events.length === 0) {
+            const framesPerSecond = Number(json.header?.fps) || 50;
+            if (!Number.isFinite(framesPerSecond) || framesPerSecond <= 0) throw new Error('Trace FPS must be a positive number');
+            const cyclesPerFrame = Math.max(1, Math.round(header.clock / framesPerSecond));
+            const previous = new Array(32).fill(-1);
+            events = frames.flatMap((frame: number[], frameIndex: number) => frame.slice(0, 32).flatMap((value, reg) => {
+                const safeValue = Number(value) & 0xFF;
+                if (previous[reg] === safeValue) return [];
+                previous[reg] = safeValue;
+                return [{ cycles: frameIndex * cyclesPerFrame, reg, val: safeValue }];
+            }));
+        } else {
+            events = events.map((event: any, index: number) => {
+                if (!event || typeof event !== 'object') throw new Error(`Trace event ${index + 1} must be an object`);
+                const cycles = Number(event.cycles);
+                const reg = Number(event.reg);
+                const val = Number(event.val);
+                if (!Number.isSafeInteger(cycles) || cycles < 0 || !Number.isInteger(reg) || reg < 0 || reg > 31 || !Number.isInteger(val) || val < 0 || val > 255) {
+                    throw new Error(`Trace event ${index + 1} has invalid cycle, register, or value`);
+                }
+                return { cycles, reg, val, index };
+            }).sort((a: SidEvent & { index: number }, b: SidEvent & { index: number }) => a.cycles - b.cycles || a.index - b.index)
+              .map(({ index, ...event }: SidEvent & { index: number }) => event);
         }
         
         return {
-            header: json.header,
+            header,
             frames: frames,
             events: events
         };
