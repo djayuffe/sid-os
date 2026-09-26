@@ -3,6 +3,14 @@
   "private": true,
   "version": "1.0.0",
   "description": "Browser-based Commodore 64 SID trace workstation, synthesizer, and tracker toolkit.",
+  "homepage": "https://github.com/djayuffe/sid-os#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/djayuffe/sid-os.git"
+  },
+  "bugs": {
+    "url": "https://github.com/djayuffe/sid-os/issues"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -22,6 +30,6 @@
     "typescript": "~5.8.2",
     "vite": "^6.2.0"
   },
-  "keywords": ["commodore-64", "c64", "sid", "chiptune", "tracker", "webaudio"],
+  "keywords": ["commodore-64", "c64", "sid", "chiptune", "tracker", "webaudio", "midi", "synthesizer", "retrocomputing"],
   "engines": {"node": ">=20"}
 }
