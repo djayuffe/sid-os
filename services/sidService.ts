@@ -497,7 +497,11 @@ export class SidPlayer {
         
         const blob = new Blob([code], { type: 'application/javascript' });
         const url = URL.createObjectURL(blob);
-        await this.ctx.audioWorklet.addModule(url);
+        try {
+          await this.ctx.audioWorklet.addModule(url);
+        } finally {
+          URL.revokeObjectURL(url);
+        }
         this.node = new AudioWorkletNode(this.ctx, procName);
         this.node.connect(this.ctx.destination);
         
@@ -540,5 +544,10 @@ export class SidPlayer {
   liveWrite(reg: number, val: number) { this.node?.port.postMessage({ type: 'LIVE', payload: { reg, val } }); }
 
   getEstimatedCycles() { return this.volatileCycles; }
-  destroy() { this.node?.disconnect(); this.node = null; this.readyPromise = null; }
+  destroy() {
+      this.node?.disconnect();
+      this.node = null;
+      this.readyPromise = null;
+      if (this.ctx.state !== 'closed') void this.ctx.close();
+  }
 }

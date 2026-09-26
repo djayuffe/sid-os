@@ -242,6 +242,23 @@ const App: React.FC = () => {
       }
   }, [sidModel, player]);
 
+  useEffect(() => {
+      if (player) player.setMasteringParams(masteringParams);
+  }, [masteringParams, player]);
+
+  useEffect(() => {
+      if (player) player.setMixerParams(mixerParams);
+  }, [mixerParams, player]);
+
+  useEffect(() => {
+      if (!player) return;
+      player.pause();
+      player.destroy();
+      setPlayer(null);
+      setIsPlaying(false);
+      SystemLogger.log('Audio', 'Audio engine selection changed; initialize playback again to use the selected engine.', 'info');
+  }, [engineType]);
+
   const initPlayer = async () => {
       // Return existing player if already initialized to prevent duplication
       if (player) return player;
@@ -631,7 +648,7 @@ const App: React.FC = () => {
                 lfoConfig={lfoConfig} setLfoConfig={setLfoConfig}
                 traceLoaded={!!traceData} isPlaying={isPlaying} onTogglePlay={togglePlay} onStop={handleStop}
                 playbackSpeed={playbackSpeed} setPlaybackSpeed={setPlaybackSpeed}
-                volume={volume} setVolume={(v) => { setVolume(v); if(player) player.setMixerParams({...mixerParams, masterVolume: v}); }}
+                volume={volume} setVolume={(v) => { setVolume(v); setMixerParams(previous => ({ ...previous, masterVolume: v })); }}
                 isFullscreen={!!document.fullscreenElement}
                 onToggleFullscreen={() => { if (!document.fullscreenElement) document.documentElement.requestFullscreen(); else document.exitFullscreen(); }}
                 editorStep={editorStep} setEditorStep={setEditorStep}
