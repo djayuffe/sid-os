@@ -13,6 +13,7 @@ interface VWindowProps {
     initialW?: number;
     initialH?: number;
     zIndex: number;
+    isFocused?: boolean;
     isMaximized?: boolean;
     onClose: (id: string) => void;
     onMinimize: (id: string) => void;
@@ -23,7 +24,7 @@ interface VWindowProps {
 const VWindow: React.FC<VWindowProps> = memo(({ 
     id, title, icon, children, 
     initialX = 100, initialY = 100, initialW = 800, initialH = 600, 
-    zIndex, isMaximized, onClose, onMinimize, onFocus, onMaximize 
+    zIndex, isFocused = false, isMaximized, onClose, onMinimize, onFocus, onMaximize
 }) => {
     const [pos, setPos] = useState({ x: initialX, y: initialY });
     const [size, setSize] = useState({ w: initialW, h: initialH });
@@ -37,14 +38,14 @@ const VWindow: React.FC<VWindowProps> = memo(({
             if (isMaximized) return;
             if (isDragging) {
                 setPos({
-                    x: e.clientX - dragStart.current.x,
-                    y: e.clientY - dragStart.current.y
+                    x: Math.max(0, Math.min(window.innerWidth - 200, e.clientX - dragStart.current.x)),
+                    y: Math.max(0, Math.min(window.innerHeight - 72, e.clientY - dragStart.current.y))
                 });
             }
             if (isResizing) {
                 setSize({
-                    w: Math.max(200, e.clientX - pos.x),
-                    h: Math.max(150, e.clientY - pos.y)
+                    w: Math.max(200, Math.min(window.innerWidth - pos.x - 16, e.clientX - pos.x)),
+                    h: Math.max(150, Math.min(window.innerHeight - pos.y - 72, e.clientY - pos.y))
                 });
             }
         };
@@ -63,7 +64,7 @@ const VWindow: React.FC<VWindowProps> = memo(({
         };
     }, [isDragging, isResizing, pos, isMaximized]);
 
-    const isFocused = zIndex > 500 || isMaximized;
+    const hasFocus = isFocused || Boolean(isMaximized);
 
     const toggleBrowserFullscreen = (e: React.MouseEvent) => {
         e.stopPropagation();
@@ -84,7 +85,7 @@ const VWindow: React.FC<VWindowProps> = memo(({
             className={`absolute flex flex-col glass silicon-border rounded-xl shadow-[0_12px_40px_rgba(0,0,0,0.8)] overflow-hidden transition-all duration-200 gpu-sync
                 ${isDragging ? 'opacity-80 scale-[1.001]' : 'opacity-100'} 
                 ${isMaximized ? 'inset-0 !w-full !h-full !translate-x-0 !translate-y-0 rounded-none z-[1000]' : ''}
-                ${isFocused ? 'window-focus border-cyan-500/40 ring-1 ring-cyan-500/10' : 'border-slate-800/40 opacity-95 grayscale-[0.1]'}
+                ${hasFocus ? 'window-focus border-cyan-500/40 ring-1 ring-cyan-500/10' : 'border-slate-800/40 opacity-95 grayscale-[0.1]'}
             `}
             style={{ 
                 transform: isMaximized ? 'none' : `translate3d(${pos.x}px, ${pos.y}px, 0)`,
@@ -105,12 +106,12 @@ const VWindow: React.FC<VWindowProps> = memo(({
                 }}
                 onDoubleClick={() => onMaximize(id)}
                 className={`h-8 flex items-center px-3 cursor-move select-none shrink-0 group transition-colors border-b border-white/5
-                    ${isFocused ? 'bg-slate-800/60' : 'bg-slate-950/40'}
+                    ${hasFocus ? 'bg-slate-800/60' : 'bg-slate-950/40'}
                 `}
             >
                 <div className="flex items-center gap-2.5 flex-1">
-                    <div className={`${isFocused ? 'text-cyan-400 animate-pulse' : 'text-slate-600'} transition-colors`}>{icon}</div>
-                    <span className={`text-[9px] font-black tracking-[0.4em] uppercase truncate transition-colors ${isFocused ? 'text-white' : 'text-slate-600'}`}>
+                    <div className={`${hasFocus ? 'text-cyan-400 animate-pulse' : 'text-slate-600'} transition-colors`}>{icon}</div>
+                    <span className={`text-[9px] font-black tracking-[0.4em] uppercase truncate transition-colors ${hasFocus ? 'text-white' : 'text-slate-600'}`}>
                         {title}
                     </span>
                 </div>

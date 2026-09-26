@@ -494,6 +494,15 @@ const App: React.FC = () => {
       window.setTimeout(() => activePlayer.liveWrite(4, instrument.waveform & 0xFE), 360);
   }, [player, clockFreq]);
 
+  const previewProjectNote = useCallback((noteName: string, instrumentId: number) => {
+      if (!project) return;
+      const match = /^([A-G][#-])(\d+)$/.exec(noteName);
+      const noteNames = ['C-', 'C#', 'D-', 'D#', 'E-', 'F-', 'F#', 'G-', 'G#', 'A-', 'A#', 'B-'];
+      const noteIndex = match ? noteNames.indexOf(match[1]) + (Number(match[2]) * 12) : -1;
+      const instrument = project.instruments.find(candidate => candidate.id === instrumentId) || project.instruments[0];
+      if (instrument && noteIndex >= 0) void previewInstrument(instrument, noteIndex);
+  }, [project, previewInstrument]);
+
   // Render App Content based on Window Type
   const renderAppContent = (type: string) => {
       switch(type) {
@@ -520,6 +529,7 @@ const App: React.FC = () => {
                           setProject(prev => prev ? updatePatternCell(prev, patId, row, ch, { note, inst }) : null);
                       }}
                       onSeek={(row) => setCursor(c => ({ ...c, row }))}
+                      onPreview={previewProjectNote}
                       player={player} clockFreq={clockFreq}
                   />
               ) : <div className="flex h-full items-center justify-center text-slate-500 font-mono">NO PROJECT DATA</div>;
@@ -613,6 +623,7 @@ const App: React.FC = () => {
                           initialW={w.w}
                           initialH={w.h}
                           zIndex={w.zIndex}
+                          isFocused={activeWindowId === w.id}
                           isMaximized={w.maximized}
                           onClose={closeWindow}
                           onMinimize={toggleMinimize}

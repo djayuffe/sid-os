@@ -189,6 +189,25 @@ const PianoRoll: React.FC<PianoRollProps> = memo(({
                 ctx.fillRect(0, y + noteHeight - 1, viewportW, 1);
             }
 
+            // Keep the edit target legible while zoomed out: a restrained
+            // crosshair avoids guessing which time/pitch cell will be written.
+            if (hoverInfo) {
+                const hoverX = hoverInfo.row * colWidth - scrollPos.x;
+                const hoverY = contentHeight - ((hoverInfo.note + 1) * noteHeight) - scrollPos.y;
+                ctx.fillStyle = 'rgba(34, 211, 238, 0.07)';
+                ctx.fillRect(hoverX, 0, colWidth, viewportH);
+                ctx.fillRect(0, hoverY, viewportW, noteHeight);
+                ctx.strokeStyle = 'rgba(34, 211, 238, 0.65)';
+                ctx.lineWidth = 1;
+                ctx.strokeRect(hoverX + 0.5, hoverY + 0.5, Math.max(1, colWidth - 1), Math.max(1, noteHeight - 1));
+            }
+
+            const cursorX = currentRow * colWidth - scrollPos.x;
+            if (cursorX >= -colWidth && cursorX <= viewportW) {
+                ctx.fillStyle = 'rgba(148, 163, 184, 0.08)';
+                ctx.fillRect(cursorX, 0, colWidth, viewportH);
+            }
+
             // --- 3. Draw Notes ---
             if (pattern) {
                 // Background Channels first
@@ -333,7 +352,12 @@ const PianoRoll: React.FC<PianoRollProps> = memo(({
                             grad.addColorStop(1, isSelected ? '#000' : `${color}20`);
                             
                             ctx.fillStyle = grad;
+                            ctx.shadowColor = isSelected ? color : 'transparent';
+                            ctx.shadowBlur = isSelected ? 12 : 0;
                             ctx.fillRect(x + 1, y + 1, w, noteHeight - 2);
+                            ctx.shadowBlur = 0;
+                            ctx.strokeStyle = isSelected ? `${color}cc` : `${color}55`;
+                            ctx.strokeRect(x + 1.5, y + 1.5, Math.max(0, w - 1), Math.max(0, noteHeight - 3));
                             
                             // Highlight
                             ctx.fillStyle = 'rgba(255,255,255,0.4)';
@@ -458,8 +482,12 @@ const PianoRoll: React.FC<PianoRollProps> = memo(({
                     </button>
                     
                     <div className="flex items-center gap-1 ml-2">
-                         <button onClick={() => { setZoomX(CLAMP(zoomX - 0.2, 0.5, 8)); }} className="p-1 hover:bg-white/10 rounded text-slate-400"><ZoomOut className="w-3 h-3"/></button>
-                         <button onClick={() => { setZoomX(CLAMP(zoomX + 0.2, 0.5, 8)); }} className="p-1 hover:bg-white/10 rounded text-slate-400"><ZoomIn className="w-3 h-3"/></button>
+                         <button aria-label="Zoom out horizontally" onClick={() => { setZoomX(CLAMP(zoomX - 0.2, 0.5, 8)); }} className="p-1 hover:bg-white/10 rounded text-slate-400"><ZoomOut className="w-3 h-3"/></button>
+                         <button aria-label="Zoom in horizontally" onClick={() => { setZoomX(CLAMP(zoomX + 0.2, 0.5, 8)); }} className="p-1 hover:bg-white/10 rounded text-slate-400"><ZoomIn className="w-3 h-3"/></button>
+                         <span className="ml-1 text-[8px] font-mono text-slate-500">TIME</span>
+                         <button aria-label="Zoom out vertically" onClick={() => { setZoomY(CLAMP(zoomY - 0.2, 0.5, 4)); }} className="p-1 hover:bg-white/10 rounded text-slate-400"><ZoomOut className="w-3 h-3"/></button>
+                         <button aria-label="Zoom in vertically" onClick={() => { setZoomY(CLAMP(zoomY + 0.2, 0.5, 4)); }} className="p-1 hover:bg-white/10 rounded text-slate-400"><ZoomIn className="w-3 h-3"/></button>
+                         <span className="text-[8px] font-mono text-slate-500">PITCH</span>
                     </div>
                 </div>
 
@@ -469,7 +497,8 @@ const PianoRoll: React.FC<PianoRollProps> = memo(({
                             <MousePointer2 className="w-3 h-3"/> {hoverInfo.noteName} (R:{hoverInfo.row})
                         </span>
                     )}
-                    <button onClick={() => { setZoomX(1.5); setZoomY(1.4); setScrollPos({x:0, y:500}); }} className="p-1 hover:bg-white/10 rounded" title="Reset View"><Maximize2 className="w-3 h-3 text-slate-400"/></button>
+                    <span className="hidden md:inline text-[8px] text-slate-600">L: ADD · R: ERASE · MMB: PAN · CTRL+WHEEL: ZOOM</span>
+                    <button aria-label="Reset piano roll view" onClick={() => { setZoomX(1.5); setZoomY(1.4); setScrollPos({x: Math.max(0, currentRow * COL_WIDTH_BASE * 1.5 - 120), y: Math.max(0, (TOTAL_NOTES - 60) * NOTE_HEIGHT_BASE * 1.4)}); }} className="p-1 hover:bg-white/10 rounded" title="Reset View"><Maximize2 className="w-3 h-3 text-slate-400"/></button>
                 </div>
             </div>
 
