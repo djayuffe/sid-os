@@ -1,5 +1,20 @@
 {
   "name": "SID OS",
+  "version": "1.0.0",
   "description": "A browser-based Commodore 64 SID trace workstation with playback, visualisation, tracker conversion, synthesis, and export tools.",
+  "release": {
+    "channel": "stable",
+    "tag": "v1.0.0",
+    "platform": "web",
+    "runtime": "browser"
+  },
+  "capabilities": [
+    "sid-trace-playback",
+    "c64-visualisation",
+    "tracker-conversion",
+    "midi-and-swm-export",
+    "offline-audio-rendering",
+    "web-midi"
+  ],
   "requestFramePermissions": []
 }

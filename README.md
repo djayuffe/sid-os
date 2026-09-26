@@ -83,6 +83,10 @@ npm run build
 
 The production build currently produces one large application chunk because the workstation loads its visual and audio tools together. It is valid for release; future performance work can split optional visualisers into lazy-loaded modules.
 
+## Release information
+
+The current stable release is [`v1.0.0`](https://github.com/djayuffe/sid-os/releases/tag/v1.0.0). See [CHANGELOG.md](CHANGELOG.md) for the release record and [metadata.json](metadata.json) for machine-readable project and capability metadata.
+
 ## Repository hygiene
 
 Credentials, local environments, dependencies, build output, coverage, and local exports are ignored. Historical DrSID patch material is preserved in `components/drsid_machine_patch/` as reference only; `components/DrSidMachine.tsx` is the live component.
