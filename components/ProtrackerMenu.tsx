@@ -165,6 +165,11 @@ const ProtrackerMenu: React.FC<ProtrackerMenuProps> = (props) => {
                 <PtGroup label="LINK">
                     <PtButton label="" icon={<Square className="w-2.5 h-2.5 fill-current"/>} onClick={props.onStop} disabled={!props.traceLoaded} />
                     <PtButton label={props.isPlaying ? "PAUSE" : "PLAY"} active={props.isPlaying} icon={props.isPlaying ? <Pause className="w-2.5 h-2.5 fill-current"/> : <Play className="w-2.5 h-2.5 fill-current"/>} onClick={props.onTogglePlay} disabled={!props.traceLoaded} />
+                    <PtButton label="SPD" sub={`${props.playbackSpeed}×`} onClick={() => {
+                        const speeds = [0.5, 1, 1.5, 2];
+                        const next = speeds[(speeds.indexOf(props.playbackSpeed) + 1) % speeds.length];
+                        props.setPlaybackSpeed(next);
+                    }} disabled={!props.traceLoaded} />
                     <PtButton label="WAV" icon={<Disc className="w-2.5 h-2.5 text-red-800 fill-current"/>} onClick={props.onExportWav} disabled={!props.traceLoaded} />
                 </PtGroup>
 

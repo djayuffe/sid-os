@@ -251,6 +251,10 @@ const App: React.FC = () => {
   }, [mixerParams, player]);
 
   useEffect(() => {
+      if (player) player.setPlaybackSpeed(playbackSpeed);
+  }, [playbackSpeed, player]);
+
+  useEffect(() => {
       if (!player) return;
       player.pause();
       player.destroy();

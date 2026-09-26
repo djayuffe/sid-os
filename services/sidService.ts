@@ -391,6 +391,7 @@ class SidProcessor extends AudioWorkletProcessor {
         const { type, payload } = e.data || {};
         if (type === 'DATA') { this.ev = payload.events || []; this.clk = payload.clock|0; this.ei=0; this.cy=0; this.ncQ=0n; }
         else if (type === 'PLAY') this.ply = !!payload;
+        else if (type === 'SPEED') this.spd = Math.max(0.01, Number(payload) || 1.0);
         else if (type === 'MODEL') { this.f.model = payload; this.v.forEach(v=>v.model=payload); }
         else if (type === 'MASTER') this.m.updateParams(payload);
         else if (type === 'MASK') this.msk = payload;
@@ -526,6 +527,11 @@ export class SidPlayer {
       if (!hasInitialVolume) sorted.unshift({ cycles: 0, reg: SID_REG.MODE_VOL, val: 0x0F });
       this.clk = clk || CLOCK_PAL; 
       this.node?.port.postMessage({ type: 'DATA', payload: { events: sorted, clock: this.clk } }); 
+  }
+
+  async setPlaybackSpeed(speed: number) {
+      await this.readyPromise;
+      this.node?.port.postMessage({ type: 'SPEED', payload: Math.max(0.01, Number(speed) || 1) });
   }
   
   async setVoiceMask(m: [boolean, boolean, boolean]) { await this.readyPromise; this.node?.port.postMessage({ type: 'MASK', payload: m }); }
