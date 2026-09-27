@@ -13,11 +13,18 @@
   },
   "capabilities": [
     "sid-trace-playback",
+    "psid-rsid-import",
     "c64-visualisation",
     "tracker-conversion",
+    "tracker-sequence-editing",
+    "piano-roll-editing",
+    "instrument-and-drum-synthesis",
+    "midi-to-sid-voice-compilation",
     "midi-import-export",
     "midi-and-swm-export",
     "offline-audio-rendering",
+    "mastering-and-mixer",
+    "sid-register-diagnostics",
     "web-midi"
   ],
   "requestFramePermissions": []
