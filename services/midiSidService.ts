@@ -161,7 +161,11 @@ class ChannelState {
 class VoiceState {
     channelIdx = -1; note = -1; freq = 0; pw = 0; ctrl = 0; adsr = 0;
     gate = false; isDrum = false; pendingRelease = false;
-    lastTriggerCycle = 0;
+    // A MIDI program change applies to future note-ons. Keep the selected
+    // patch on the voice so an already sounding note is not retroactively
+    // rewritten when its channel changes program.
+    patch: SidPatch = DEFAULT_PATCH;
+    lastTriggerOrder = 0;
 }
 
 export async function compileMidiToSidTrace(midiData: ArrayBuffer, options: { clock?: number; filename?: string }): Promise<ParsedTrace> {
@@ -228,6 +232,7 @@ export async function compileMidiToSidTrace(midiData: ArrayBuffer, options: { cl
     let filterCutoff = 0;
     let filterResRoute = 0;
     let filterModeVolume = 0x0F;
+    let nextTriggerOrder = 0;
     
     let currentCycle = 0;
     let nextFrameCycle = 0;
@@ -235,6 +240,38 @@ export async function compileMidiToSidTrace(midiData: ArrayBuffer, options: { cl
 
     const emit = (c: number, r: number, v: number) => {
         traceEvents.push({ cycles: Math.floor(c), reg: r, val: v & 0xFF });
+    };
+
+    const refreshFilter = () => {
+        // SID filter registers are global. Route every currently gated voice
+        // whose *captured* program patch uses the filter. The most recently
+        // triggered filtered voice owns the single cutoff/resonance setting.
+        const filtered = voices
+            .map((voice, index) => ({ voice, index }))
+            .filter(({ voice }) => !voice.isDrum && voice.gate && voice.patch.filter);
+        const nextModeVolume = filtered.length > 0 ? 0x1F : 0x0F;
+        const latest = filtered.reduce<typeof filtered[number] | undefined>((selected, candidate) =>
+            !selected || candidate.voice.lastTriggerOrder > selected.voice.lastTriggerOrder ? candidate : selected,
+        undefined);
+        const nextRoute = filtered.reduce((route, { index }) => route | (1 << index), 0)
+            | (((latest?.voice.patch.resonance ?? 0) & 0x0F) << 4);
+        const nextCutoff = latest
+            ? CLAMP(Math.round(latest.voice.patch.cutoff ?? 0x400), 0, 0x7FF)
+            : 0;
+
+        if (nextCutoff !== filterCutoff) {
+            filterCutoff = nextCutoff;
+            emit(currentCycle, SID_REG.FC_LO, filterCutoff & 0x07);
+            emit(currentCycle, SID_REG.FC_HI, filterCutoff >> 3);
+        }
+        if (nextRoute !== filterResRoute) {
+            filterResRoute = nextRoute;
+            emit(currentCycle, SID_REG.RES_FILT, filterResRoute);
+        }
+        if (nextModeVolume !== filterModeVolume) {
+            filterModeVolume = nextModeVolume;
+            emit(currentCycle, SID_REG.MODE_VOL, filterModeVolume);
+        }
     };
 
     // MIDI has no SID master-volume equivalent. Set $D418 explicitly so the
@@ -249,7 +286,7 @@ export async function compileMidiToSidTrace(midiData: ArrayBuffer, options: { cl
         const match = voices
             .map((voice, index) => ({ voice, index }))
             .filter(({ voice }) => !voice.isDrum && voice.gate && voice.channelIdx === chIdx && voice.note === note)
-            .sort((a, b) => a.voice.lastTriggerCycle - b.voice.lastTriggerCycle)[0];
+            .sort((a, b) => a.voice.lastTriggerOrder - b.voice.lastTriggerOrder)[0];
         if (!match) return;
         if (ch.sustain) {
             match.voice.pendingRelease = true;
@@ -260,6 +297,7 @@ export async function compileMidiToSidTrace(midiData: ArrayBuffer, options: { cl
         const ctrl = match.voice.ctrl & 0xFE;
         emit(currentCycle, off + SID_REG.V1_CTRL, ctrl);
         match.voice.ctrl = ctrl;
+        refreshFilter();
     };
 
     while (currentCycle < totalDurationCycles) {
@@ -297,6 +335,7 @@ export async function compileMidiToSidTrace(midiData: ArrayBuffer, options: { cl
                         voices[2].note = e.note;
                         voices[2].gate = false;
                         voices[2].pendingRelease = false;
+                        refreshFilter();
                     } else if (e.kind === 'off' && voices[2].isDrum && voices[2].note === e.note) {
                         // A channel-10 note-off belongs only to its matching
                         // percussion trigger. This prevents an older note-off
@@ -322,6 +361,7 @@ export async function compileMidiToSidTrace(midiData: ArrayBuffer, options: { cl
                                         v.ctrl = ctrl;
                                     }
                                 });
+                                refreshFilter();
                             }
                         }
                     }
@@ -333,12 +373,12 @@ export async function compileMidiToSidTrace(midiData: ArrayBuffer, options: { cl
                             if (!pick) {
                                 const freeVoices = candidates.filter(c => !c.v.gate);
                                 if (freeVoices.length > 0) {
-                                    freeVoices.sort((a, b) => a.v.lastTriggerCycle - b.v.lastTriggerCycle);
+                                    freeVoices.sort((a, b) => a.v.lastTriggerOrder - b.v.lastTriggerOrder);
                                     pick = freeVoices[0];
                                 }
                             }
                             if (!pick && candidates.length > 0) {
-                                candidates.sort((a, b) => a.v.lastTriggerCycle - b.v.lastTriggerCycle);
+                                candidates.sort((a, b) => a.v.lastTriggerOrder - b.v.lastTriggerOrder);
                                 pick = candidates[0];
                             }
 
@@ -349,10 +389,11 @@ export async function compileMidiToSidTrace(midiData: ArrayBuffer, options: { cl
                                 v.note = e.note;
                                 v.gate = true;
                                 v.pendingRelease = false;
-                                v.lastTriggerCycle = currentCycle;
+                                v.lastTriggerOrder = nextTriggerOrder++;
                                 
                                 const off = vIdx * 7;
                                 const patch = ch.patch;
+                                v.patch = patch;
                                 const wf = patch.wave;
                                 // SID has no per-voice velocity register. Map MIDI
                                 // velocity onto sustain while retaining a usable floor
@@ -373,24 +414,10 @@ export async function compileMidiToSidTrace(midiData: ArrayBuffer, options: { cl
                                 emit(currentCycle, off + SID_REG.V1_CTRL, wf & 0xFE);
                                 emit(currentCycle, off + SID_REG.V1_CTRL, wf | 0x01);
 
-                                // Filter registers are global on a SID. Apply
-                                // the patch's filter at the same cycle as the
-                                // voice trigger so bass/lead presets actually
-                                // receive their intended tone shaping.
-                                if (patch.filter) {
-                                    const cutoff = CLAMP(Math.round(patch.cutoff ?? 0x400), 0, 0x7FF);
-                                    filterCutoff = cutoff;
-                                    filterResRoute = ((patch.resonance ?? 0) & 0x0F) << 4 | (1 << vIdx);
-                                    filterModeVolume = 0x1F;
-                                    emit(currentCycle, SID_REG.FC_LO, cutoff & 0x07);
-                                    emit(currentCycle, SID_REG.FC_HI, cutoff >> 3);
-                                    emit(currentCycle, SID_REG.RES_FILT, filterResRoute);
-                                    emit(currentCycle, SID_REG.MODE_VOL, 0x1F);
-                                }
-
                                 v.ctrl = wf | 0x01;
                                 v.adsr = adsr;
                                 v.pw = patch.pw;
+                                refreshFilter();
                             }
                         } else {
                             handleNoteOff(e.ch, e.note);
@@ -437,7 +464,7 @@ export async function compileMidiToSidTrace(midiData: ArrayBuffer, options: { cl
             if (v.isDrum || v.channelIdx === -1) return;
             const ch = channels[v.channelIdx];
             const note = v.note;
-            const vib = Math.sin(ch.lfoPhase) * (ch.patch.vibDepth || 0) * (ch.modWheel / 127);
+            const vib = Math.sin(ch.lfoPhase) * (v.patch.vibDepth || 0) * (ch.modWheel / 127);
             const pb = ch.pb / 8192 * 2; 
             const hz = midiNoteToHz(note) * Math.pow(2, (pb + vib) / 12);
             const freqReg = Math.min(65535, Math.round((hz * 16777216) / clock));
@@ -449,8 +476,8 @@ export async function compileMidiToSidTrace(midiData: ArrayBuffer, options: { cl
                 emit(currentCycle, off+1, v.freq >> 8);
             }
             
-            const pwm = Math.sin(ch.lfoPhase * 0.5) * 50; 
-            const pwReg = CLAMP(Math.floor(ch.patch.pw + pwm), 0, 4095);
+            const pwm = Math.sin(ch.lfoPhase * 0.5) * 50;
+            const pwReg = CLAMP(Math.floor(v.patch.pw + pwm), 0, 4095);
             if (pwReg !== v.pw) {
                 v.pw = pwReg;
                 const off = i * 7;

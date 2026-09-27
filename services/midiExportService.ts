@@ -1,6 +1,6 @@
 
 import { ParsedTrace } from '../types';
-import { CLOCK_PAL, CLOCK_NTSC } from './sidService';
+import { CLOCK_PAL } from './sidService';
 
 const MIDI_NOTE_A4 = 69;
 const FREQ_A4 = 440;

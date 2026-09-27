@@ -1,13 +1,13 @@
 {
   "name": "SID OS",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "Ulf Bertilsson",
   "copyright": "Copyright (C) 2026 Ulf Bertilsson",
   "license": "GPL-3.0-only",
   "description": "A browser-based Commodore 64 SID trace workstation with playback, visualisation, tracker conversion, synthesis, and export tools.",
   "release": {
     "channel": "stable",
-    "tag": "v1.0.0",
+    "tag": "v1.1.0",
     "platform": "web",
     "runtime": "browser"
   },
@@ -15,6 +15,7 @@
     "sid-trace-playback",
     "c64-visualisation",
     "tracker-conversion",
+    "midi-import-export",
     "midi-and-swm-export",
     "offline-audio-rendering",
     "web-midi"

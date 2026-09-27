@@ -1,6 +1,15 @@
-# SID OS
+# SID OS — Commodore 64 SID workstation
 
-SID OS is a browser-based Commodore 64 SID workstation. It turns SID-oriented trace data into an interactive workspace for playback, register inspection, visualisation, tracker conversion, sound design, rendering, and export.
+![Release](https://img.shields.io/github/v/release/djayuffe/sid-os?display_name=tag&sort=semver)
+![License](https://img.shields.io/badge/license-GPL--3.0--only-blue)
+![Runtime](https://img.shields.io/badge/runtime-browser%20%7C%20Node%2020%2B-0ea5e9)
+
+SID OS is a browser-based Commodore 64 SID workstation. It turns SID-oriented
+trace data and MIDI files into an interactive workspace for playback, register
+inspection, visualisation, tracker conversion, sound design, rendering, and
+export. It is designed for musicians, C64 developers, chiptune artists, sound
+researchers, and anyone who wants register-level SID inspection without a
+native emulator installation.
 
 Everything runs locally in the browser. Imported data stays on the device unless the user deliberately exports or shares it.
 
@@ -11,6 +20,10 @@ Everything runs locally in the browser. Imported data stays on the device unless
 - **Tracker workflow** — convert trace data to patterns and instruments, edit sequences, and work in tracker or piano-roll views.
 - **Sound design** — use the DrSID drum machine, ArpSID synthesizer, mastering controls, and optional MIDI input.
 - **Export** — produce MIDI, JSON, SWM, SID-oriented data, and offline-rendered audio where the relevant source data is available.
+
+The application has no account system, backend, API key, telemetry endpoint, or
+required cloud service. Files are read locally by the browser and exports are
+generated locally through the browser download API.
 
 ## Quick start
 
@@ -30,7 +43,13 @@ Open the address reported by Vite (normally `http://localhost:3000`). Load a sup
 - WebGL for the 3D visualisers
 - Web MIDI only when the browser and connected hardware support it
 
-SID OS is intentionally client-side. It has no required server, account, API key, or telemetry path. Internet access may still be used by the browser for the Tailwind and Google Fonts resources referenced by the current UI shell.
+SID OS is intentionally client-side. Web Audio is required for playback, WebGL
+is required for the 3D visualisers, and Web MIDI is optional. Chromium-based
+desktop browsers provide the broadest Web MIDI support. Safari and Firefox can
+still run trace, tracker, visualiser, and export workflows subject to their
+Web Audio/WebGL support. Internet access may be used by the current UI shell
+for Tailwind and Google Fonts resources; imported music and generated exports
+remain local.
 
 ## Project layout
 
@@ -44,6 +63,65 @@ SID OS is intentionally client-side. It has no required server, account, API key
 | `docs/` | Architecture, development, and workflow documentation |
 
 ## Feature reference
+
+### Desktop and window system
+
+The desktop shell exposes independently focusable, draggable, resizable,
+minimizable, maximizable, and fullscreen-capable windows. The taskbar groups
+controls into Disk, Edit, Kernel, Link, and Host areas. Every launcher is
+keyboard-focusable and has an accessible label.
+
+| Workspace | Purpose |
+| --- | --- |
+| Tracker | Four-column SID pattern editor with note, instrument, volume, command, and hex editing. |
+| Sequence | Order-list editing, insertion/deletion, loop-point selection, and frame seeking. |
+| Piano Roll | Note-grid editing, zoom/scroll, playhead following, note preview, and instrument selection. |
+| Instruments | ADSR, waveform, pulse-width, sync/ring, instrument creation, deletion, and auditioning. |
+| Arp Synth | Arpeggiator/synth controls, factory patches, routing, keyboard input, CC mapping, and optional Web MIDI. |
+| Dr.SID | Drum kits, per-voice synthesis, pattern sequencing, kit navigation, and MIDI-clock-aware controls. |
+| Mastering | Per-voice volume/pan/mute, EQ, tape, compressor, exciter, chorus, reverb, imager, limiter, DC block, and output gain. |
+| Hyper SID | High-fidelity shader/audio visualisation and engine diagnostics. |
+| System / Logo | C64-inspired system and logo visualisation. |
+| Chip Die | SID oscillator, envelope, filter-register, and silicon-state visualisation. |
+| Physical SID | Physical-model visualisation driven by trace, model, and estimated cycle position. |
+| SID Audit | Register/bus diagnostics and live health information. |
+| Project | Tracker metadata and project-level details. |
+| Format Docs | In-app reference for supported trace and project formats. |
+| Artwork | Album-cover viewer, local cover import, scale/position, dithering, and wallpaper mode. |
+| Logs | Filterable operational log, trace/SID views, pause, download, and clear controls. |
+
+### Supported input and validation
+
+- JSON trace documents containing register frames and optional cycle events.
+- JSON Lines traces containing header, frame, and event records.
+- PSID/RSID SID files through the browser C64/SID parser and playback path.
+- Standard MIDI type 0 and type 1 files (`.mid`/`.midi`), including running
+  status, tempo changes, program changes, sustain, pitch bend, modulation,
+  overlapping notes, channel 10 drums, and bounded import duration.
+- Saved tracker projects with validated instruments, patterns, subtunes,
+  order lists, chord tables, tempo tables, and frame speed.
+
+Malformed headers, unsupported SMPTE MIDI timing, invalid VLQs, out-of-range
+register values, missing frames, invalid clocks, and oversized imports are
+rejected with an in-app log entry rather than silently repaired.
+
+### MIDI-to-SID voice and tone compiler
+
+`services/midiSidService.ts` converts MIDI events into a deterministic SID
+register trace. It maps MIDI notes to the selected PAL/NTSC SID clock, applies a
+two-semitone pitch-bend range and channel modulation, allocates three SID voices
+with reuse/stealing rules, handles sustain-pedal release, and uses FIFO matching
+for overlapping same-note instances. GM program families select SID-appropriate
+patches with waveform, pulse width, ADSR, vibrato, and filter parameters.
+Filtered patches emit cutoff, resonance, routing, and low-pass mode writes at
+the note boundary. Channel 10 is rendered through the dedicated drum processor
+with kick, snare, hats, toms, claps, crashes, choke groups, velocity, and
+release handling.
+
+Frequency writes use the SID 16-bit phase-increment formula and are rounded
+without 32-bit bitwise truncation. Frame snapshots are taken after same-cycle
+note, pitch, drum, and filter updates, so visualisers and exports agree with the
+audible register stream.
 
 ### Playback and trace analysis
 
@@ -85,7 +163,7 @@ The production build currently produces one large application chunk because the 
 
 ## Release information
 
-The current stable release is [`v1.0.0`](https://github.com/djayuffe/sid-os/releases/tag/v1.0.0). See [CHANGELOG.md](CHANGELOG.md) for the release record and [metadata.json](metadata.json) for machine-readable project and capability metadata.
+The current stable release is [`v1.1.0`](https://github.com/djayuffe/sid-os/releases/tag/v1.1.0). See [CHANGELOG.md](CHANGELOG.md) for the release record, [NOTICE.md](NOTICE.md) for copyright and licensing notices, and [metadata.json](metadata.json) for machine-readable project and capability metadata.
 
 ## Repository hygiene
 
@@ -95,4 +173,4 @@ Credentials, local environments, dependencies, build output, coverage, and local
 
 Copyright (C) 2026 Ulf Bertilsson.
 
-SID OS is licensed under the [GNU General Public License v3.0 only](LICENSE). You may copy, modify, and redistribute the project under the GPL-3.0 terms; redistributed derivatives must remain available under the same license. See [LICENSE](LICENSE) for the complete text.
+SID OS is licensed under the [GNU General Public License v3.0 only](LICENSE). You may copy, modify, and redistribute the project under the GPL-3.0 terms; redistributed derivatives must remain available under the same license. See [LICENSE](LICENSE) and [NOTICE.md](NOTICE.md) for the complete terms and project notice.
