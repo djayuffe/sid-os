@@ -4,6 +4,12 @@ All notable changes to SID OS are documented here.
 
 ## Unreleased
 
+### Fixed
+
+- Made MIDI note timing deterministic at shared ticks: controller/program changes run first, then note-offs, then note-ons.
+- Added explicit gate-off writes when a SID voice is stolen, plus a bounded release tail for malformed/open-ended MIDI notes.
+- Prevented tracker keyboard auto-repeat from inserting duplicate notes or gates and clamped tracker frame speed to a safe integer range.
+
 ## [1.1.0] — 2026-09-27
 
 ### Added

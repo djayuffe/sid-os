@@ -81,7 +81,7 @@ export const useTrackerInput = ({ enabled, cursor, setCursor, onEdit, step, patt
             if (e.ctrlKey || e.metaKey) return; 
 
             const { patternIdx, row, channel, column } = cursor;
-            
+
             // Navigation
             if (e.code === 'ArrowUp') {
                 e.preventDefault();
@@ -111,6 +111,12 @@ export const useTrackerInput = ({ enabled, cursor, setCursor, onEdit, step, patt
                 setCursor({ ...cursor, channel: nextChan, column: 0 });
                 return;
             }
+
+            // Browser key-repeat is useful for navigation, but it is harmful
+            // for tracker entry: holding a piano key would write a stream of
+            // notes/gates and make the instrument sound stuck. Accept one
+            // edit per physical key press after navigation has been handled.
+            if (e.repeat && column >= 0 && column <= 4) return;
 
             // Erasure
             if (e.code === 'Delete' || e.code === 'Backspace') {

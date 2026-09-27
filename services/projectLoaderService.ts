@@ -24,7 +24,9 @@ export const validateProject = (json: any): TrackerProject => {
         subtunes: Array.isArray(json.subtunes) ? json.subtunes : [],
         chordTable: Array.isArray(json.chordTable) ? json.chordTable : [],
         tempoTable: Array.isArray(json.tempoTable) ? json.tempoTable : [],
-        frameSpeed: typeof json.frameSpeed === 'number' ? json.frameSpeed : 6
+        frameSpeed: typeof json.frameSpeed === 'number' && Number.isFinite(json.frameSpeed)
+            ? Math.max(1, Math.min(31, Math.round(json.frameSpeed)))
+            : 6
     };
     if (project.instruments.length === 0) {
         project.instruments.push({
@@ -41,7 +43,12 @@ export const validateProject = (json: any): TrackerProject => {
 export const renderProjectToTrace = (project: TrackerProject, clock: number): ParsedTrace => {
     const frames: Uint8Array[] = [];
     const events: any[] = [];
-    const speed = project.frameSpeed || 6;
+    // Frame speed is an integer row length. Clamp here as well as during JSON
+    // validation because callers can construct TrackerProject objects directly.
+    const rawSpeed = project.frameSpeed;
+    const speed = Number.isFinite(rawSpeed)
+        ? Math.max(1, Math.min(31, Math.round(rawSpeed as number)))
+        : 6;
     const subtune = project.subtunes[0];
     
     // Channels state

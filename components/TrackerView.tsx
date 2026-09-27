@@ -162,7 +162,7 @@ const TrackerView: React.FC<TrackerViewProps> = memo(({ trace, player, project, 
         cursor,
         setCursor: onCursorMove,
         onEdit,
-        step: Math.max(0, Math.min(16, step)),
+        step: Number.isFinite(step) ? Math.max(0, Math.min(16, Math.floor(step))) : 0,
         patternLen: 64,
         onSetNoteLength: () => undefined
     });
