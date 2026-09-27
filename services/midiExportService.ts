@@ -32,16 +32,17 @@ const calculatePitchBend = (actualFreq: number, noteFreq: number): number => {
 };
 
 const writeVLQ = (value: number, bytes: number[]) => {
-  let buffer = value & 0x7f;
-  while ((value >>= 7)) {
-    buffer <<= 8;
-    buffer |= (value & 0x7f) | 0x80;
+  // Standard MIDI files encode delta-times in at most four VLQ bytes.
+  // Avoid bitwise coercion here: it silently corrupts values above 2^31.
+  if (!Number.isInteger(value) || value < 0 || value > 0x0FFFFFFF) {
+    throw new Error('MIDI event time is outside the four-byte VLQ range');
   }
-  while (true) {
-    bytes.push(buffer & 0xff);
-    if (buffer & 0x80) buffer >>= 8;
-    else break;
+  const encoded = [value & 0x7F];
+  while (value >= 0x80) {
+    value = Math.floor(value / 0x80);
+    encoded.push((value & 0x7F) | 0x80);
   }
+  bytes.push(...encoded.reverse());
 };
 
 const writeUint32 = (val: number, bytes: number[]) => {
@@ -73,9 +74,11 @@ export const generateMidiFile = (trace: ParsedTrace, options: MidiExportOptions)
   }
   const { bpm, ppq, duration, channels } = options;
   
-  const isNtsc = (trace.header.clock || CLOCK_PAL) >= 1000000;
-  const clockFreq = isNtsc ? CLOCK_NTSC : CLOCK_PAL;
-  const fps = isNtsc ? 60 : 50;
+  const declaredClock = trace.header.clock;
+  const clockFreq = Number.isSafeInteger(declaredClock) && declaredClock > 0
+    ? declaredClock
+    : CLOCK_PAL;
+  const fps = clockFreq >= 1_000_000 ? 60 : 50;
   const ticksPerSecond = (bpm * ppq) / 60;
   const ticksPerFrame = ticksPerSecond / fps;
 
