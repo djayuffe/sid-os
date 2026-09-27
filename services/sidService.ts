@@ -38,20 +38,22 @@ export function getNoteName(freq: number, clock: number): string {
 
 export function midiNoteToFreq(note: number, clock: number): number {
     const safeNote = Number(note);
-    if (!Number.isFinite(safeNote)) return 0;
+    const safeClock = Number(clock);
+    if (!Number.isFinite(safeNote) || !Number.isFinite(safeClock) || safeClock <= 0) return 0;
     const hz = 440 * Math.pow(2, (safeNote - 69) / 12);
-    const val = Math.round((hz * 16777216) / clock);
+    const val = Math.round((hz * 16777216) / safeClock);
     if (!Number.isFinite(val)) return 0;
     return Math.max(0, Math.min(65535, val));
 }
 
 export function generateWaveformPoints(ctrl: number, pw: number, freq: number, points: number, phaseOffset: number): number[] {
+    if (!Number.isInteger(points) || points <= 0 || points > 1_000_000) return [];
     const arr = new Float32Array(points);
     const isTri = (ctrl & 0x10) !== 0;
     const isSaw = (ctrl & 0x20) !== 0;
     const isPul = (ctrl & 0x40) !== 0;
     const isNoi = (ctrl & 0x80) !== 0;
-    const duty = pw / 4095;
+    const duty = Math.max(0, Math.min(1, Number(pw) / 4095));
 
     for (let i = 0; i < points; i++) {
         const phase = (phaseOffset + i / points) % 1.0;
@@ -199,12 +201,18 @@ export function parseTraceFile(content: string): ParsedTrace | null {
 export function getRegsAtCycle(trace: ParsedTrace | null | undefined, targetCycle: number): number[] {
   if (!trace) return new Array(32).fill(0);
   const regs = new Uint8Array(32);
-  const tgt = targetCycle | 0;
+  const tgt = Number.isFinite(targetCycle) ? Math.max(0, targetCycle) : 0;
   const events: SidEvent[] = (trace as any).events || [];
-  // Binary search could be better, but linear is safe for now
-  for (let i = 0; i < events.length; i++) {
+  // Preserve precision for long traces; bitwise coercion wraps after 2^31.
+  let lo = 0;
+  let hi = events.length;
+  while (lo < hi) {
+    const mid = lo + Math.floor((hi - lo) / 2);
+    if (events[mid].cycles <= tgt) lo = mid + 1;
+    else hi = mid;
+  }
+  for (let i = 0; i < lo; i++) {
     const e = events[i];
-    if ((e.cycles | 0) > tgt) break;
     regs[e.reg & 0x1F] = e.val & 0xFF;
   }
   return Array.from(regs);

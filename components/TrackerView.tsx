@@ -148,10 +148,11 @@ interface TrackerViewProps {
   onToggleVoice: (i: number) => void;
   showHex: boolean;
   step: number;
+  fpsOverride?: number | null;
   onEdit: (cursor: EditorCursor, value: string) => void;
 }
 
-const TrackerView: React.FC<TrackerViewProps> = memo(({ trace, player, project, clock, cursor, onCursorMove, voiceMask, onToggleVoice, showHex, step, onEdit }) => {
+const TrackerView: React.FC<TrackerViewProps> = memo(({ trace, player, project, clock, cursor, onCursorMove, voiceMask, onToggleVoice, showHex, step, fpsOverride, onEdit }) => {
     const [currentFrame, setCurrentFrame] = useState(0);
     const containerRef = useRef<HTMLDivElement>(null);
     const ROW_HEIGHT = 18; // Dense layout
@@ -171,7 +172,7 @@ const TrackerView: React.FC<TrackerViewProps> = memo(({ trace, player, project, 
         const update = () => {
             if (player) {
                 const cy = player.getEstimatedCycles();
-                const fps = (trace.header.clock || clock) > 1000000 ? 60 : 50; 
+                const fps = fpsOverride || trace.header.fps || ((trace.header.clock || clock) > 1000000 ? 60 : 50);
                 const cyclesPerFrame = (trace.header.clock || clock) / fps;
                 // Floor to ensure integer frame index
                 setCurrentFrame(Math.max(0, Math.floor(cy / cyclesPerFrame)));
@@ -180,7 +181,7 @@ const TrackerView: React.FC<TrackerViewProps> = memo(({ trace, player, project, 
         };
         raf = requestAnimationFrame(update);
         return () => cancelAnimationFrame(raf);
-    }, [player, clock, trace.header.clock]);
+    }, [player, clock, trace.header.clock, trace.header.fps, fpsOverride]);
 
     // Current Registers for Scopes (Safe access)
     const currentRegs: Uint8Array | number[] = (trace.frames && trace.frames[currentFrame]) 

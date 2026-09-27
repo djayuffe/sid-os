@@ -15,6 +15,7 @@ interface PianoRollProps {
     selectedChannel: number;
     player: SidPlayer | null;
     clockFreq: number;
+    fpsOverride?: number | null;
 }
 
 const NOTES = ["C-", "C#", "D-", "D#", "E-", "F-", "F#", "G-", "G#", "A-", "A#", "B-"];
@@ -32,7 +33,7 @@ const SAFE_FREQ_TO_MIDI = (freq: number, clock: number) => {
 
 const PianoRoll: React.FC<PianoRollProps> = memo(({ 
     project, activePatternIndex, currentRow, selectedInstId, 
-    onEdit, onSeek, onPreview, selectedChannel, player, clockFreq 
+    onEdit, onSeek, onPreview, selectedChannel, player, clockFreq, fpsOverride
 }) => {
     const gridRef = useRef<HTMLDivElement>(null);
     const keysRef = useRef<HTMLCanvasElement>(null);
@@ -117,7 +118,7 @@ const PianoRoll: React.FC<PianoRollProps> = memo(({
             
             if (player && player.isPlaying && clockFreq > 0) {
                 const cycles = player.getEstimatedCycles() || 0;
-                const fps = (clockFreq > 1000000 ? 60 : 50);
+                const fps = fpsOverride || (clockFreq > 1000000 ? 60 : 50);
                 const cyclesPerFrame = clockFreq / fps;
                 const totalFrames = cyclesPerFrame > 0 ? cycles / cyclesPerFrame : 0;
                 
@@ -382,7 +383,7 @@ const PianoRoll: React.FC<PianoRollProps> = memo(({
 
         rafId = requestAnimationFrame(render);
         return () => cancelAnimationFrame(rafId);
-    }, [project, pattern, zoomX, zoomY, scrollPos, currentRow, selectedChannel, hoverInfo, player, clockFreq, followPlayhead]);
+    }, [project, pattern, zoomX, zoomY, scrollPos, currentRow, selectedChannel, hoverInfo, player, clockFreq, fpsOverride, followPlayhead]);
 
     // --- Handlers ---
     const handleWheel = (e: React.WheelEvent) => {

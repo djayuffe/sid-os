@@ -173,10 +173,15 @@ const App: React.FC = () => {
       setWindows(prev => {
           const existing = prev.find(w => w.type === type);
           if (existing) {
-              // Bring to front
-              focusWindow(existing.id);
-              if (existing.minimized) return prev.map(w => w.id === existing.id ? { ...w, minimized: false, zIndex: nextZIndex + 1 } : w);
-              return prev;
+              // Bring to front in this transaction. Calling focusWindow here
+              // caused a nested state update and stale z-indexes on rapid
+              // launcher clicks.
+              const front = nextZIndex + 1;
+              setNextZIndex(z => z + 1);
+              setActiveWindowId(existing.id);
+              return prev.map(w => w.id === existing.id
+                  ? { ...w, minimized: false, zIndex: front }
+                  : w);
           }
 
           // Define Window Props
@@ -220,7 +225,7 @@ const App: React.FC = () => {
           setActiveWindowId(type);
           return [...prev, newWindow];
       });
-  }, [nextZIndex, focusWindow]);
+  }, [nextZIndex]);
 
   const closeWindow = useCallback((id: string) => {
       setWindows(prev => prev.filter(w => w.id !== id));
@@ -253,6 +258,19 @@ const App: React.FC = () => {
   useEffect(() => {
       if (player) player.setPlaybackSpeed(playbackSpeed);
   }, [playbackSpeed, player]);
+
+  // Project edits must immediately update playback and export data. Keeping
+  // this synchronization at the boundary covers tracker, piano-roll,
+  // sequence, instrument, and pattern-tool mutations consistently.
+  useEffect(() => {
+      if (!project) return;
+      const nextTrace = renderProjectToTrace(project, clockFreq);
+      setTraceData(previous => ({
+          ...nextTrace,
+          header: { ...(previous?.header || {}), ...nextTrace.header }
+      }));
+      if (player) void player.setData(nextTrace.events, nextTrace.header.clock || clockFreq);
+  }, [project, clockFreq, player]);
 
   useEffect(() => {
       if (!player) return;
@@ -518,6 +536,7 @@ const App: React.FC = () => {
                       onToggleVoice={(i) => { const n = [...voiceMask] as [boolean,boolean,boolean]; n[i] = !n[i]; setVoiceMask(n); player?.setVoiceMask(n); }}
                       showHex={showHex}
                       step={editorStep}
+                      fpsOverride={fpsOverride}
                       onEdit={editTrackerCell}
                   />
               ) : <div className="flex h-full items-center justify-center text-slate-500 font-mono">NO DATA LOADED</div>;
@@ -534,7 +553,7 @@ const App: React.FC = () => {
                       }}
                       onSeek={(row) => setCursor(c => ({ ...c, row }))}
                       onPreview={previewProjectNote}
-                      player={player} clockFreq={clockFreq}
+                      player={player} clockFreq={clockFreq} fpsOverride={fpsOverride}
                   />
               ) : <div className="flex h-full items-center justify-center text-slate-500 font-mono">NO PROJECT DATA</div>;
           case 'INSTRUMENTS':

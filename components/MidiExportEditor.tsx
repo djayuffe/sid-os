@@ -42,6 +42,8 @@ const MidiExportEditor: React.FC<MidiExportEditorProps> = ({ initialBpm, initial
         setChannels(next);
     };
 
+    const canExport = channels.some(Boolean);
+
     return (
         <div className="flex flex-col gap-6 font-mono select-none">
             <div className="bg-slate-950 p-3 rounded border border-slate-800 shadow-inner flex flex-col gap-2">
@@ -138,7 +140,7 @@ const MidiExportEditor: React.FC<MidiExportEditorProps> = ({ initialBpm, initial
                 <button onClick={onClose} className="flex-1 py-2 text-xs font-bold bg-slate-800 text-slate-400 rounded hover:bg-slate-700 transition-colors">
                     CANCEL
                 </button>
-                <button onClick={() => onExport(bpm, ppq, duration, useProject, channels)} className="flex-1 py-2 text-xs font-bold bg-cyan-900 border border-cyan-500 text-cyan-100 rounded hover:bg-cyan-800 shadow-[0_0_15px_rgba(34,211,238,0.2)] flex items-center justify-center gap-2 transition-all active:scale-95">
+                <button disabled={!canExport} onClick={() => onExport(bpm, ppq, duration, useProject, channels)} className="flex-1 py-2 text-xs font-bold bg-cyan-900 border border-cyan-500 text-cyan-100 rounded hover:bg-cyan-800 shadow-[0_0_15px_rgba(34,211,238,0.2)] flex items-center justify-center gap-2 transition-all active:scale-95 disabled:cursor-not-allowed disabled:opacity-40">
                     <Download className="w-4 h-4"/> EXPORT MIDI
                 </button>
             </div>

@@ -59,7 +59,7 @@ function parseSmfLocal(midiData: ArrayBuffer) {
         throw new Error('SMPTE-timed MIDI files are not supported');
     }
     const ppq = timeDiv & 0x7FFF;
-    if (format > 2 || trackCount === 0 || ppq === 0 || (format === 0 && trackCount !== 1)) {
+    if (format > 1 || trackCount === 0 || ppq === 0 || (format === 0 && trackCount !== 1)) {
         throw new Error('MIDI file has no tracks or an invalid tick division');
     }
     
@@ -132,6 +132,7 @@ function parseSmfLocal(midiData: ArrayBuffer) {
                 if (ptr + ml > end) throw new Error('MIDI meta event exceeds its track');
                 if (mt === 0x51 && ml === 3) {
                     const mpqn = (b[ptr] << 16) | (b[ptr + 1] << 8) | b[ptr + 2];
+                    if (mpqn === 0) throw new Error('MIDI tempo event has an invalid zero tempo');
                     tempos.push({ tick, mpqn });
                 }
                 ptr += ml;
@@ -165,7 +166,10 @@ export async function compileMidiToSidTrace(midiData: ArrayBuffer, options: { cl
     if (!events.some(event => event.kind === 'on' || event.kind === 'off')) {
         throw new Error('MIDI file contains no note events to convert');
     }
-    const clock = options.clock || CLOCK_PAL;
+    const clock = options.clock ?? CLOCK_PAL;
+    if (!Number.isFinite(clock) || clock <= 0) {
+        throw new Error('MIDI conversion requires a positive SID clock');
+    }
     const fps = clock >= 1_000_000 ? 60 : 50;
     const cyclesPerFrame = Math.floor(clock / fps);
     const MAX_SIM_STEP = 2500; 
@@ -287,9 +291,17 @@ export async function compileMidiToSidTrace(midiData: ArrayBuffer, options: { cl
                 if (e.ch === 9) {
                     if (e.kind === 'on') {
                         const scaledVel = Math.floor(e.vel * 0.5);
+                        // Channel 10 reserves SID voice 3 while a drum is active.
+                        // Stop any previously allocated melodic note before the drum
+                        // takes ownership of those registers.
+                        if (!voices[2].isDrum && voices[2].gate) {
+                            emit(currentCycle, 14 + SID_REG.V1_CTRL, voices[2].ctrl & 0xFE);
+                        }
                         drumProc.trigger(0, e.note, scaledVel);
                         voices[2].isDrum = true;
                         voices[2].channelIdx = 9;
+                        voices[2].gate = false;
+                        voices[2].pendingRelease = false;
                     } else if (e.kind === 'off') {
                         drumProc.release(0);
                     }
@@ -351,8 +363,12 @@ export async function compileMidiToSidTrace(midiData: ArrayBuffer, options: { cl
                                 emit(currentCycle, off + SID_REG.V1_PW_LO, patch.pw & 0xFF);
                                 emit(currentCycle, off + SID_REG.V1_PW_HI, (patch.pw >> 8) & 0xF);
 
-                                emit(currentCycle, off + SID_REG.V1_CTRL, wf & 0xFE); 
-                                emit(currentCycle + 50, off + SID_REG.V1_CTRL, wf | 0x01);
+                                // Keep both sides of a hard restart in the same MIDI
+                                // event slot. A delayed gate-on can otherwise occur
+                                // after a same-tick or very short note-off and leave a
+                                // SID voice permanently gated.
+                                emit(currentCycle, off + SID_REG.V1_CTRL, wf & 0xFE);
+                                emit(currentCycle, off + SID_REG.V1_CTRL, wf | 0x01);
 
                                 v.ctrl = wf | 0x01;
                                 v.adsr = adsr;
@@ -390,9 +406,12 @@ export async function compileMidiToSidTrace(midiData: ArrayBuffer, options: { cl
             voices[2].freq = d.freq;
             voices[2].ctrl = d.ctrl;
 
-            if (!drumProc.voices[0].active && drumProc.voices[0].releaseTime > 0.5) {
+            if (!drumProc.voices[0].active) {
+                if (voices[2].ctrl !== 0) emit(currentCycle, off + 4, 0);
                 voices[2].isDrum = false;
                 voices[2].channelIdx = -1;
+                voices[2].ctrl = 0;
+                voices[2].gate = false;
             }
         }
 

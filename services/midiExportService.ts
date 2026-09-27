@@ -59,6 +59,18 @@ const writeString = (str: string, bytes: number[]) => {
 };
 
 export const generateMidiFile = (trace: ParsedTrace, options: MidiExportOptions): Uint8Array => {
+  if (!trace || !Array.isArray(trace.frames) || trace.frames.length === 0) {
+    throw new Error('MIDI export requires at least one trace frame');
+  }
+  if (!Number.isFinite(options.bpm) || options.bpm < 20 || options.bpm > 400) {
+    throw new Error('MIDI export BPM must be between 20 and 400');
+  }
+  if (!Number.isInteger(options.ppq) || options.ppq < 1 || options.ppq > 0x7FFF) {
+    throw new Error('MIDI export PPQ must be an integer between 1 and 32767');
+  }
+  if (!options.channels || !options.channels.some(Boolean)) {
+    throw new Error('Select at least one SID voice for MIDI export');
+  }
   const { bpm, ppq, duration, channels } = options;
   
   const isNtsc = (trace.header.clock || CLOCK_PAL) >= 1000000;
@@ -116,14 +128,13 @@ export const generateMidiFile = (trace: ParsedTrace, options: MidiExportOptions)
     }
 
     const regOffset = v * 7;
-    let frameTickAccumulator = 0;
-
     for (let f = 0; f < trace.frames.length; f++) {
       const frame = trace.frames[f];
       if (!frame || frame.length < 25) continue;
 
-      frameTickAccumulator += ticksPerFrame;
-      let eventTick = Math.round(frameTickAccumulator);
+      // Frame zero represents time zero; advancing before processing it inserts
+      // an unintended silent gap at the start of every exported MIDI file.
+      let eventTick = Math.round(f * ticksPerFrame);
 
       // Enhanced "Smart" Logic: Snap to grid only if error is small (< 10%)
       if (quantizeTicks > 0) {
