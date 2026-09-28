@@ -118,7 +118,7 @@ const PianoRoll: React.FC<PianoRollProps> = memo(({
             
             if (player && player.isPlaying && clockFreq > 0) {
                 const cycles = player.getEstimatedCycles() || 0;
-                const fps = fpsOverride || (clockFreq > 1000000 ? 60 : 50);
+                const fps = fpsOverride || project.frameRate || 50;
                 const cyclesPerFrame = clockFreq / fps;
                 const totalFrames = cyclesPerFrame > 0 ? cycles / cyclesPerFrame : 0;
                 

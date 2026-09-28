@@ -673,7 +673,7 @@ export async function compileMidiToSidTrace(midiData: ArrayBuffer, options: { cl
     }
 
     return {
-        header: { clock, song: options.filename || "Midi Import", author: "SidStation Pro", copyright: "Auto-Gen", originalFilename: options.filename },
+        header: { clock, fps, song: options.filename || "Midi Import", author: "SidStation Pro", copyright: "Auto-Gen", originalFilename: options.filename },
         frames, events: traceEvents.sort((a,b) => a.cycles - b.cycles)
     };
 }

@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { SidPlayer, parseTraceFile, CLOCK_PAL, CLOCK_NTSC, midiNoteToFreq } from './services/sidService';
 import { SidComposerService } from './services/sidComposerService';
 import { generateMidiFile } from './services/midiExportService';
@@ -15,6 +15,7 @@ import { OfflineSidRenderer } from './services/OfflineSidRenderer';
 import { updateProjectInstrument, createNewInstrument, deleteProjectInstrument, transposePattern, clearPattern, updatePatternCell, updatePatternCellHex, updateOrderList, insertSequenceStep, deleteSequenceStep, setSequenceLoopPoint } from './services/editorService';
 import { SystemLogger } from './services/Logger';
 import { renderProjectToTrace, validateProject } from './services/projectLoaderService';
+import { selectPlaybackTrace, selectMidiExportTrace, type ImportedTraceSession } from './services/traceSessionService';
 
 // Icons
 import { 
@@ -67,6 +68,8 @@ interface WindowState {
 const App: React.FC = () => {
   const [traceData, setTraceData] = useState<ParsedTrace | null>(null);
   const [project, setProject] = useState<TrackerProject | null>(null);
+  const importedSession = useRef<ImportedTraceSession | null>(null);
+  const loadedPlayerData = useRef<{ player: SidPlayer; events: ParsedTrace['events']; clock: number; source: ParsedTrace | undefined; ready: Promise<void> } | null>(null);
   const [player, setPlayer] = useState<SidPlayer | null>(null);
   
   // App State
@@ -259,18 +262,32 @@ const App: React.FC = () => {
       if (player) player.setPlaybackSpeed(playbackSpeed);
   }, [playbackSpeed, player]);
 
-  // Project edits must immediately update playback and export data. Keeping
-  // this synchronization at the boundary covers tracker, piano-roll,
-  // sequence, instrument, and pattern-tool mutations consistently.
+  // Keep imported register timing until the user actually edits the project.
+  // The generated tracker is an editor view, not a replacement for the source.
+  const playbackTrace = useMemo(() => project ? selectPlaybackTrace(project, importedSession.current, clockFreq) : null, [project, clockFreq]);
+  const synchronizePlayer = useCallback((target: SidPlayer, nextTrace: ParsedTrace, nextClock: number) => {
+      const previous = loadedPlayerData.current;
+      if (previous?.player === target && previous.events === nextTrace.events && previous.clock === nextClock) return previous.ready;
+      const source = importedSession.current?.trace;
+      const position = previous?.player === target && previous.source === source ? target.getEstimatedCycles() : 0;
+      const pending = { player: target, events: nextTrace.events, clock: nextClock, source, ready: Promise.resolve() };
+      loadedPlayerData.current = pending;
+      pending.ready = target.setData(nextTrace.events, nextClock).then(async () => {
+          if (loadedPlayerData.current === pending && position > 0) await target.seek(Math.floor(position));
+      }).catch(error => {
+          if (loadedPlayerData.current === pending) loadedPlayerData.current = null;
+          throw error;
+      });
+      return pending.ready;
+  }, []);
+
   useEffect(() => {
-      if (!project) return;
-      const nextTrace = renderProjectToTrace(project, clockFreq);
-      setTraceData(previous => ({
-          ...nextTrace,
-          header: { ...(previous?.header || {}), ...nextTrace.header }
-      }));
-      if (player) void player.setData(nextTrace.events, nextTrace.header.clock || clockFreq);
-  }, [project, clockFreq, player]);
+      if (!playbackTrace) return;
+      setTraceData(playbackTrace);
+      if (!player) return;
+      void synchronizePlayer(player, playbackTrace, playbackTrace.header.clock || clockFreq)
+          .catch(error => SystemLogger.log('Audio', 'Could not synchronize project playback.', 'error', error));
+  }, [playbackTrace, clockFreq, player, synchronizePlayer]);
 
   useEffect(() => {
       if (!player) return;
@@ -345,9 +362,6 @@ const App: React.FC = () => {
                   SystemLogger.log('Loader', 'Multi-SID file detected; this importer currently converts the primary SID chip only.', 'warn');
               }
               
-              if (header.isNtsc) setClockFreq(CLOCK_NTSC);
-              else setClockFreq(CLOCK_PAL);
-
               const emulator = new C64Emulator();
               const config: C64Config = {
                   ...emulationConfig,
@@ -362,6 +376,7 @@ const App: React.FC = () => {
                       author: dump.metadata.author,
                       copyright: dump.metadata.released,
                       clock: dump.metadata.clockFreq,
+                      fps: dump.detectedRefreshRate,
                       originalFilename: rawName
                   },
                   frames: dump.frames.map(f => f.chips[0].registers),
@@ -381,21 +396,23 @@ const App: React.FC = () => {
           }
 
           if (parsed) {
-              setTraceData(parsed);
-              
-              if (loadedProject) {
-                  setProject(loadedProject);
-                  setSelectedInstId(loadedProject.instruments[0]?.id || 1);
-              } else {
-                  // Auto-generate project structure for editing.
+              // Resolve the editor view before publishing the new session;
+              // otherwise a clock update can render the previous project.
+              if (!loadedProject) {
                   try {
-                      const proj = await traceToTrackerProject(parsed);
-                      setProject(proj);
-                      if (proj.instruments.length > 0) setSelectedInstId(proj.instruments[0].id);
+                      loadedProject = await traceToTrackerProject(parsed);
                   } catch (err) {
                       SystemLogger.log('Tracker', 'Could not generate a tracker project from the trace.', 'warn', err);
                   }
               }
+              await player?.pause();
+              setIsPlaying(false);
+              importedSession.current = { trace: parsed, project: loadedProject };
+              setTraceData(parsed);
+              setProject(loadedProject);
+              setClockFreq(parsed.header.clock || clockFreq);
+              setSelectedInstId(loadedProject?.instruments[0]?.id || 1);
+              setCursor({ patternIdx: 0, row: 0, channel: 0, column: 0 });
 
               // Auto-open relevant window
               if (fileName.endsWith('.mid') || fileName.endsWith('.midi')) {
@@ -409,7 +426,11 @@ const App: React.FC = () => {
                   p = await initPlayer();
               }
               if (p) {
-                  p.setData(parsed.events, parsed.header.clock || clockFreq);
+                  // The effect configures successful project imports once.
+                  // A failed editor conversion still permits raw playback.
+                  if (!importedSession.current?.project) {
+                      await synchronizePlayer(p, parsed, parsed.header.clock || clockFreq);
+                  }
               }
           } else {
               SystemLogger.log('Loader', 'Import failed: the file did not contain supported trace data.', 'error');
@@ -431,21 +452,24 @@ const App: React.FC = () => {
   };
   
   const togglePlay = async () => {
-      let p = player;
-      if (!p) {
-          p = await initPlayer();
-          if (!p) return; // initialization failed
-          if (traceData) p.setData(traceData.events, traceData.header.clock || clockFreq);
-          await p.play();
-          setIsPlaying(true);
-          return;
-      }
-      if (isPlaying) {
-          p.pause();
+      try {
+          let p = player;
+          if (!p) {
+              p = await initPlayer();
+              if (!p) return; // initialization failed
+          }
+          if (isPlaying) {
+              await p.pause();
+              setIsPlaying(false);
+          } else {
+              const nextTrace = playbackTrace || traceData;
+              if (nextTrace) await synchronizePlayer(p, nextTrace, nextTrace.header.clock || clockFreq);
+              await p.play();
+              setIsPlaying(true);
+          }
+      } catch (error) {
           setIsPlaying(false);
-      } else {
-          await p.play();
-          setIsPlaying(true);
+          SystemLogger.log('Audio', 'Could not start playback.', 'error', error);
       }
   };
 
@@ -477,7 +501,7 @@ const App: React.FC = () => {
   const onExportMidi = (bpm: number, ppq: number, duration: 'smart' | 'raw' | '1/4' | '1/8' | '1/16' | '1/32', useProject: boolean, channels: [boolean, boolean, boolean]) => {
       if (!traceData) return;
       try {
-          const source = useProject && project ? renderProjectToTrace(project, clockFreq) : traceData;
+          const source = selectMidiExportTrace(traceData, project, importedSession.current, clockFreq, useProject);
           downloadBlob(new Blob([generateMidiFile(source, { bpm, ppq, duration, channels })], { type: 'audio/midi' }), `${exportBaseName()}.mid`);
           setShowMidiExport(false);
       } catch (err) {
@@ -555,7 +579,7 @@ const App: React.FC = () => {
                       }}
                       onSeek={(row) => setCursor(c => ({ ...c, row }))}
                       onPreview={previewProjectNote}
-                      player={player} clockFreq={clockFreq} fpsOverride={fpsOverride}
+                      player={player} clockFreq={traceData?.header.clock || clockFreq} fpsOverride={fpsOverride || traceData?.header.fps}
                   />
               ) : <div className="flex h-full items-center justify-center text-slate-500 font-mono">NO PROJECT DATA</div>;
           case 'INSTRUMENTS':

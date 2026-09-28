@@ -4,6 +4,9 @@ import { midiNoteToFreq } from './sidService';
 
 export const validateProject = (json: any): TrackerProject => {
     if (!json || typeof json !== 'object') throw new Error("Invalid JSON");
+    if (json.frameRate !== undefined && (!Number.isFinite(json.frameRate) || json.frameRate <= 0)) {
+        throw new Error('Project frame rate must be a positive number');
+    }
     
     if (Array.isArray(json.instruments)) {
         json.instruments.forEach((inst: any, idx: number) => {
@@ -24,6 +27,7 @@ export const validateProject = (json: any): TrackerProject => {
         subtunes: Array.isArray(json.subtunes) ? json.subtunes : [],
         chordTable: Array.isArray(json.chordTable) ? json.chordTable : [],
         tempoTable: Array.isArray(json.tempoTable) ? json.tempoTable : [],
+        frameRate: json.frameRate ?? 50,
         frameSpeed: typeof json.frameSpeed === 'number' && Number.isFinite(json.frameSpeed)
             ? Math.max(1, Math.min(31, Math.round(json.frameSpeed)))
             : 6
@@ -41,6 +45,10 @@ export const validateProject = (json: any): TrackerProject => {
 };
 
 export const renderProjectToTrace = (project: TrackerProject, clock: number): ParsedTrace => {
+    const fps = project.frameRate ?? 50;
+    if (!Number.isFinite(fps) || fps <= 0 || !Number.isFinite(clock) || clock <= 0) {
+        throw new Error('Project rendering requires a positive frame rate and SID clock');
+    }
     const frames: Uint8Array[] = [];
     const events: any[] = [];
     // Frame speed is an integer row length. Clamp here as well as during JSON
@@ -173,8 +181,8 @@ export const renderProjectToTrace = (project: TrackerProject, clock: number): Pa
         }
     };
 
-    let cyclesAccumulator = 0;
-    const cyclesPerFrame = clock / 50;
+    let frameIndex = 0;
+    const cyclesPerFrame = clock / fps;
 
     for (const patId of subtune.orderList) {
         const pattern = project.patterns.find(p => p.id === patId);
@@ -213,11 +221,11 @@ export const renderProjectToTrace = (project: TrackerProject, clock: number): Pa
                 });
             }
             for(let s=0; s<speed; s++) {
-                pushFrame(s, Math.floor(cyclesAccumulator));
-                cyclesAccumulator += cyclesPerFrame;
+                pushFrame(s, Math.floor(frameIndex * cyclesPerFrame));
+                frameIndex++;
             }
         }
     }
 
-    return { header: { clock, fps: 50, song: project.meta.title }, frames, events };
+    return { header: { clock, fps, song: project.meta.title }, frames, events };
 };

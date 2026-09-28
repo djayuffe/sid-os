@@ -42,6 +42,7 @@ export const exportProjectToJson = (trackerProject: TrackerProject | undefined) 
     const exportData: TrackerProject = {
         meta: { ...trackerProject.meta },
         frameSpeed: trackerProject.frameSpeed || 6,
+        frameRate: trackerProject.frameRate ?? 50,
         instruments: trackerProject.instruments,
         subtunes: trackerProject.subtunes,
         patterns: trackerProject.patterns,

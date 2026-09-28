@@ -250,6 +250,7 @@ export const traceToTrackerProject = async (trace: ParsedTrace): Promise<Tracker
         chordTable: [],
         tempoTable: [],
         frameSpeed: 1,
+        frameRate: trace.header.fps ?? (clock >= 1_000_000 ? 60 : 50),
         meta: { 
             title: sanitizeString(trace.header.song || '', 32), 
             author: sanitizeString(trace.header.author || '', 32), 

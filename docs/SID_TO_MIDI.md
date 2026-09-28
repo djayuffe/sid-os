@@ -5,6 +5,28 @@ settings preserve the captured performance most closely. **EDITED PROJECT**
 exports the tracker reconstruction and edits; it cannot restore information
 already lost while turning a register trace into tracker rows.
 
+## Playback and tracker timing
+
+Import keeps the original register stream for playback. Opening the generated
+tracker does not replace its cycle-accurate events with a row reconstruction.
+The first project edit switches playback to the reconstructed project; **RAW
+TRACE** MIDI export still uses the untouched imported source. **EDITED PROJECT**
+exports the current tracker data, including its reconstruction limitations.
+
+Projects store `frameRate` (updates per second) separately from `frameSpeed`
+(updates per tracker row) and the SID oscillator clock. Imported 60 Hz, 100 Hz
+and fractional-rate captures retain that rate when edited and saved. Older
+project JSON without `frameRate` retains its legacy 50 Hz interpretation.
+Frame timestamps are computed from absolute indices to avoid accumulated
+rounding drift. The piano-roll playhead uses the same rate as playback.
+
+An explicit chip-clock change speeds up or slows down an untouched imported
+cycle stream; it does not rewrite the source. Raw MIDI export keeps the source
+clock. For the original tempo and pitch, keep the imported clock and 1x playback
+speed. Re-import a file if an earlier app version already replaced its in-memory
+trace with a tracker reconstruction; discarded sub-frame timing cannot be
+recovered from that reconstruction.
+
 ## What is preserved
 
 `services/midiExportService.ts` writes SMF type 1 with one independent MIDI
@@ -111,5 +133,8 @@ The regression suite independently decodes generated SMF bytes. It checks
 chunk boundaries, VLQs, seven-bit channel data, tempo, final duration, initial
 tuning, the full 16-bit frequency range, wide bends, repeated sub-frame gates,
 malformed input, large exports, multi-chip channels, compatibility entry points
-and rational NTSC import timing. Tests use the installed TypeScript compiler
+and rational NTSC import timing. Session regressions additionally check that
+opening the tracker preserves sub-frame events, edits retain 50/60/100/fractional
+Hz timing, raw export survives edits, and project saves retain the frame rate.
+Tests use the installed TypeScript compiler
 and run on the project's supported Node.js versions without extra dependencies.

@@ -121,6 +121,8 @@ export interface TrackerProject {
   subtunes: TrackerSubtune[];
   meta: { title: string; author: string; released: string; }
   frameSpeed?: number;
+  /** Register update rate in Hz; independent of the SID oscillator clock. */
+  frameRate?: number;
   chordTable?: SwmChord[];
   tempoTable?: SwmTempo[];
 }
