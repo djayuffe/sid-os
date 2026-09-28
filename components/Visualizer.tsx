@@ -66,7 +66,7 @@ const Visualizer: React.FC<VisualizerProps> = memo(({ player, isPlaying, header,
       const physics = (player && player.volatilePhysics) ? player.volatilePhysics : { temp: 25, power: 0 };
       const mask = voiceMask || [true, true, true];
       
-      const cutoff = ((regs[SID_REG.FC_LO] & 0x07) << 8) | regs[SID_REG.FC_HI];
+      const cutoff = (regs[SID_REG.FC_LO] & 0x07) | (regs[SID_REG.FC_HI] << 3);
       const resonance = (regs[SID_REG.RES_FILT] >> 4) / 15.0;
       const masterVol = (regs[SID_REG.MODE_VOL] & 0x0F) / 15.0;
 

@@ -42,7 +42,8 @@ class HighQualityDownsampler {
     private outputCount: number;
     
     // Config: 6 lobes gives ~100dB stopband attenuation with Blackman
-    private lobes: number = 6; 
+    private lobes: number = 6;
+    get lookahead(): number { return Math.ceil(this.lobes * this.ratio) + 1; }
     
     constructor(inRate: number, outRate: number) {
         this.ratio = inRate / outRate;
@@ -89,7 +90,7 @@ class HighQualityDownsampler {
             // Find buffer index for absolute input index 'i'
             // Head points to inputCount (next write), so last write was inputCount - 1
             const offsetFromEnd = this.inputCount - 1 - i;
-            if (offsetFromEnd < 0) continue; // Future sample (shouldn't happen if ready)
+            if (i < 0 || offsetFromEnd < 0 || offsetFromEnd >= this.size) continue; // Future sample (shouldn't happen if ready)
             
             const bufIdx = (this.head - 1 - offsetFromEnd + this.size * 2) & this.mask;
             
@@ -138,7 +139,9 @@ class Voice {
         this.f=0; this.pw=0; this.ctrl=0; this.ad=0; this.sr=0;
         this.acc=0; this.lfsr=0x7FFFF8;
         this.env=0; this.envState=0; this.gate=false;
-        this.output=0;
+        this.output=0; this.raw12=0; this.msbFlipped=false;
+        this.rateCount=0; this.expCount=0; this.expPeriod=1;
+        this.sf = new Slew(0, 0.05); this.spw = new Slew(0, 0.005); this.se = new Slew(0, 0.05);
     }
 
     write(r: number, v: number) {
@@ -175,14 +178,15 @@ class Voice {
 
         if (this.envState === 1) { // Attack
             if (this.env < 0xFF) this.env = (this.env + 1) & 0xFF;
-            else this.envState = 2;
+            if (this.env === 0xFF) this.envState = 2;
         } else {
             const p = this.getExpPeriod(this.env);
+            this.expPeriod = p;
             this.expCount++;
             if (this.expCount < p) return;
             this.expCount = 0;
             const sus = ((this.sr >> 4) & 0xF) * 17;
-            if (this.envState === 2) {
+            if (this.envState === 2 || this.envState === 3) {
                 if (this.env > sus) this.env--; else this.envState = 3;
             } else if (this.envState === 4) {
                 if (this.env > 0) this.env--; else this.envState = 0;
@@ -213,7 +217,7 @@ class Voice {
         
         if (!tri && !saw && !pul && !noi) {
             this.raw12 = 0;
-            return this.model === '6581' ? (this.output * 0.9995) : 0;
+            return 2047.5;
         }
 
         const acc = ((ctrl & 0x08) !== 0) ? 0 : (this.acc & 0xFFFFFF);
@@ -221,21 +225,20 @@ class Voice {
 
         if (tri || this.model === '8580') {
             const ringActive = (ctrl & 0x04) !== 0;
-            const msb = ringActive ? ((modAcc & 0x800000) !== 0) : ((acc & 0x800000) !== 0);
+            const msb = ((acc ^ (ringActive ? modAcc : 0)) & 0x800000) !== 0;
             let temp = (acc >>> 11) & 0x0FFF;
             if (msb) temp ^= 0x0FFF;
             tV = temp;
         }
         if (saw || this.model === '8580') sV = (acc >>> 12) & 0x0FFF;
         if (pul || this.model === '8580') {
-            const pw = (this.spw.step() | 0) & 0x0FFF;
+            const pw = this.pw & 0x0FFF;
             pV = ((acc >>> 12) >= pw) ? 0x0FFF : 0x0000;
         }
         if (noi || this.model === '8580') {
             const l = this.lfsr;
             nV = (((l >> 22) & 1) << 11) | (((l >> 20) & 1) << 10) | (((l >> 16) & 1) << 9)  | (((l >> 13) & 1) << 8)  |
-                 (((l >> 11) & 1) << 7)  | (((l >> 7)  & 1) << 6)  | (((l >> 4)  & 1) << 5)  | (((l >> 2)  & 1) << 4)  |
-                 (((l >> 1)  & 1) << 3)  | (((l >> 0)  & 1) << 2)  | (((l >> 17) & 1) << 1)  | (((l >> 19) & 1) << 0);
+                 (((l >> 11) & 1) << 7)  | (((l >> 7)  & 1) << 6)  | (((l >> 4)  & 1) << 5)  | (((l >> 2)  & 1) << 4);
         }
 
         let res = 0;
@@ -257,7 +260,8 @@ class Voice {
     compute(modAcc: number) {
         const raw = this.getWave(modAcc);
         this.se.set(this.env / 255.0);
-        const gain = (this.model === '6581' && (this.ctrl & 0xF0) > 0x10) ? 0.85 : 1.0;
+        const mask = this.ctrl & 0xF0;
+        const gain = (this.model === '6581' && (mask & (mask - 1)) !== 0) ? 0.85 : 1.0;
         this.output = ((raw / 4095.0) - 0.5) * 2.0 * this.se.step() * gain;
     }
 }
@@ -292,7 +296,7 @@ class Filter {
         
         const rawRes = this.sres.step();
         const g = Math.sin(w0) / (1 + Math.cos(w0));
-        const clippedG = Math.max(0.001, Math.min(0.9, g));
+        const clippedG = Math.max(0, Math.min(0.9, g));
         const dampingBase = [2.0, 1.8, 1.6, 1.4, 1.2, 1.1, 1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1][Math.floor(rawRes) & 15] || 1.0;
         const k = this.model === '6581' ? (dampingBase * 0.8) : dampingBase;
 
@@ -300,12 +304,12 @@ class Filter {
         const muteV3 = (this.mode & 0x08) !== 0;
 
         for (let i = 0; i < 3; i++) {
-            if (i === 2 && muteV3) continue;
+            if (i === 2 && muteV3 && !(this.routes & 4)) continue;
             if ((this.routes >> i) & 1) vi += ins[i]; else vnf += ins[i];
         }
         if ((this.routes >> 3) & 1) vi += ext; else vnf += ext;
         
-        vi += 0.005; // DC Leakage
+        // No synthetic DC source: silent voices must remain silent.
         if (this.model === '6581') vi = Math.tanh(vi * 0.8) * 1.25;
 
         const feedback = (k + clippedG) * this.z1;
@@ -317,6 +321,8 @@ class Filter {
         const v1_svf = clippedG * hp; const bp = v1_svf + this.z1; this.z1 = bp + v1_svf;
         const v2_svf = clippedG * bp; const lp = v2_svf + this.z2; this.z2 = lp + v2_svf;
         
+        this.z1 = Number.isFinite(this.z1) ? Math.max(-4, Math.min(4, this.z1)) : 0;
+        this.z2 = Number.isFinite(this.z2) ? Math.max(-4, Math.min(4, this.z2)) : 0;
         let vf = 0;
         if (this.mode & 1) vf += lp; 
         if (this.mode & 2) vf += bp; 
@@ -338,121 +344,99 @@ export class OfflineSidRenderer {
         onProgress?: (p: number) => void
     ): Promise<Blob> {
         const OUTPUT_RATE = 44100;
-        const CLOCK = trace.header.clock || 985248;
-        
-        // High Quality Resampler Config
-        // We run the engine at CLOCK rate (approx 1MHz)
-        // And downsample to 44.1kHz using Windowed Sinc
-        const resampler = new HighQualityDownsampler(CLOCK, OUTPUT_RATE);
-        
-        // Setup Voices
-        const v = [new Voice(), new Voice(), new Voice()];
-        v.forEach(voice => voice.model = model);
-        const filter = new Filter();
-        filter.model = model;
-        
-        // Use Shared MasteringChain for post-processing at final rate
-        const fx = new MasteringChain(OUTPUT_RATE);
-        fx.setModel(model);
-        fx.updateParams(mastering);
+        const CLOCK = trace.header.clock ?? 985248;
+        const fps = trace.header.fps ?? (CLOCK >= 1_000_000 ? 60 : 50);
+        if (!Number.isFinite(CLOCK) || CLOCK < 100_000 || CLOCK > 2_000_000) throw new Error('Invalid SID clock');
+        if (!Number.isFinite(fps) || fps <= 0 || fps > CLOCK) throw new Error('Invalid trace frame rate');
+        let events = [...(trace.events || [])];
+        if (!events.length && trace.frames.length) {
+            const previous = new Array(32).fill(-1);
+            trace.frames.forEach((frame, index) => {
+                Array.from(frame).slice(0, 32).forEach((val, reg) => {
+                    if (val !== previous[reg]) events.push({ cycles: Math.floor(index * CLOCK / fps), reg, val });
+                    previous[reg] = val;
+                });
+            });
+        }
+        if (events.some(e => !e || !Number.isSafeInteger(e.cycles) || e.cycles < 0 || !Number.isInteger(e.reg) || e.reg < 0 || e.reg > 31 || !Number.isInteger(e.val) || e.val < 0 || e.val > 255)) throw new Error('Invalid SID event');
+        events.sort((a, b) => a.cycles - b.cycles);
+        if (!events.some(e => e.cycles === 0 && e.reg === 24)) events.unshift({ cycles: 0, reg: 24, val: 15 });
 
-        const events = trace.events;
-        const lastCycle = events.length > 0 ? events[events.length - 1].cycles : 0;
-        const totalCycles = lastCycle + (1 * CLOCK); // +1 sec trail
-        
+        const endCycle = Math.max(events.at(-1)?.cycles + 1 || 0, Math.ceil(trace.frames.length * CLOCK / fps));
+        // Release held notes at the trace boundary; render one second of effect/release tail.
+        const totalCycles = endCycle + Math.ceil(CLOCK);
+        if (totalCycles / CLOCK > 1800) throw new Error('Offline export is limited to 30 minutes including the release tail');
+        const resampler = new HighQualityDownsampler(CLOCK, OUTPUT_RATE);
         const outputSamplesTotal = Math.ceil(totalCycles / resampler.ratio);
         const leftBuf = new Float32Array(outputSamplesTotal);
         const rightBuf = new Float32Array(outputSamplesTotal);
-        
-        let currentCycle = 0;
-        let eventIdx = 0;
-        let outIdx = 0;
-        
-        const PROCESS_CHUNK_SIZE = 100000; // Cycles to process per tick
+        const v = [new Voice(), new Voice(), new Voice()];
+        v.forEach(voice => voice.model = model);
+        const filter = new Filter(), filterR = new Filter();
+        filter.model = model; filterR.model = model;
+        const fx = new MasteringChain(OUTPUT_RATE);
+        fx.setModel(model);
+        fx.updateParams(mastering);
+        const finite = (n: number, fallback: number, lo: number, hi: number) => Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : fallback;
+        const solo = mixer.voices.some(voice => voice.solo);
+        const gains = mixer.voices.map(voice => voice.muted || (solo && !voice.solo) ? 0 : finite(voice.volume, 1, 0, 2));
+        const pans = mixer.voices.map(voice => finite(voice.pan, 0, -1, 1));
+        const masterVolume = finite(mixer.masterVolume, 0.5, 0, 2);
+        let currentCycle = 0, eventIdx = 0, outIdx = 0;
+        const PROCESS_CHUNK_SIZE = 100000;
+        // Zero padding supplies the sinc kernel's final lookahead without shortening the WAV.
+        const paddedCycles = totalCycles + resampler.lookahead;
+        const leftIn = [0, 0, 0], rightIn = [0, 0, 0];
 
-        return new Promise<Blob>((resolve) => {
+        return new Promise<Blob>((resolve, reject) => {
             const processChunk = () => {
-                const limit = Math.min(totalCycles, currentCycle + PROCESS_CHUNK_SIZE);
-                
-                while (currentCycle < limit) {
-                    // 1. Process Events
-                    while (eventIdx < events.length && events[eventIdx].cycles <= currentCycle) {
-                        const ev = events[eventIdx];
-                        const reg = ev.reg;
-                        const val = ev.val;
-                        if (reg < 21) v[(reg / 7) | 0].write(reg % 7, val);
-                        else if (reg < 25) filter.write(reg, val);
-                        eventIdx++;
-                    }
-                    
-                    // 2. Step Physics (1 Cycle)
-                    for(let i=0; i<3; i++) {
-                        const vv = v[i];
-                        const pAcc = vv.acc;
-                        const tBit = (vv.ctrl & 0x08) !== 0;
-                        const f = Math.floor(vv.sf.step()); 
-                        let nAcc = tBit ? 0 : ((pAcc + f) & 0xFFFFFF);
-                        const mod = v[i===0?2:i-1];
-                        const msb = (nAcc & 0x800000) !== 0;
-                        const prevMsb = (pAcc & 0x800000) !== 0;
-                        if (msb && !prevMsb) vv.msbFlipped = true;
-                        const b19 = (nAcc & 0x080000) !== 0;
-                        const prevB19 = (pAcc & 0x080000) !== 0;
-                        if (tBit) vv.lfsr = 0x7FFFF8;
-                        else if (!prevB19 && b19) vv.clockNoise();
-                        vv.acc = nAcc;
-                        vv.stepEnv();
-                    }
-                    
-                    // Hard Sync Logic
-                    for(let i=0; i<3; i++) {
-                        const vv = v[i];
-                        const mod = v[i===0?2:i-1];
-                        if (vv.ctrl & 0x02 && mod.msbFlipped) vv.acc = 0;
-                        mod.msbFlipped = false; 
-                    }
-                    
-                    // Output
-                    v[0].compute(v[2].acc);
-                    v[1].compute(v[0].acc);
-                    v[2].compute(v[1].acc);
-                    
-                    const v0 = (mixer.voices[0].muted ? 0 : v[0].output) * mixer.voices[0].volume;
-                    const v1 = (mixer.voices[1].muted ? 0 : v[1].output) * mixer.voices[1].volume;
-                    const v2 = (mixer.voices[2].muted ? 0 : v[2].output) * mixer.voices[2].volume;
-                    
-                    // Filter runs at full clock rate
-                    const mono = filter.process([v0, v1, v2], 0, CLOCK);
-                    
-                    // 3. Feed Resampler
-                    resampler.push(mono, mono);
-                    
-                    // 4. Drain Resampler
-                    while (resampler.ready && outIdx < outputSamplesTotal) {
-                        const frame = resampler.generate();
-                        if (frame) {
-                            // Apply Mastering Chain per sample (Post-Resample)
-                            const mix = frame[0] * mixer.masterVolume;
-                            const [l, r] = fx.process(mix, mix);
-                            leftBuf[outIdx] = l;
-                            rightBuf[outIdx] = r;
-                            outIdx++;
+                try {
+                    const limit = Math.min(paddedCycles, currentCycle + PROCESS_CHUNK_SIZE);
+                    while (currentCycle < limit) {
+                        if (currentCycle < totalCycles) {
+                            while (eventIdx < events.length && events[eventIdx].cycles <= currentCycle) {
+                                const { reg, val } = events[eventIdx++];
+                                if (reg < 21) v[Math.floor(reg / 7)].write(reg % 7, val);
+                                else if (reg < 25) { filter.write(reg, val); filterR.write(reg, val); }
+                            }
+                            if (currentCycle === endCycle) v.forEach(voice => voice.write(4, voice.ctrl & 0xFE));
+                            // Compute all oscillator edges before applying simultaneous sync.
+                            for (const voice of v) {
+                                const previous = voice.acc;
+                                const test = (voice.ctrl & 8) !== 0;
+                                voice.acc = test ? 0 : (previous + voice.f) & 0xFFFFFF;
+                                voice.msbFlipped = !!(voice.acc & 0x800000) && !(previous & 0x800000);
+                                if (test) voice.lfsr = 0x7FFFF8;
+                                else if (!(previous & 0x080000) && (voice.acc & 0x080000)) voice.clockNoise();
+                                voice.stepEnv();
+                            }
+                            for (let i = 0; i < 3; i++) {
+                                const source = v[(i + 2) % 3], sourceMod = v[(i + 1) % 3];
+                                if ((v[i].ctrl & 2) && source.msbFlipped && !((source.ctrl & 2) && sourceMod.msbFlipped)) v[i].acc = 0;
+                            }
+                            for (let i = 0; i < 3; i++) {
+                                v[i].compute(v[(i + 2) % 3].acc);
+                                const sample = v[i].output * gains[i];
+                                leftIn[i] = sample * (1 - Math.max(0, pans[i]));
+                                rightIn[i] = sample * (1 + Math.min(0, pans[i]));
+                            }
+                            resampler.push(filter.process(leftIn, 0, CLOCK), filterR.process(rightIn, 0, CLOCK));
+                        } else resampler.push(0, 0);
+                        while (resampler.ready && outIdx < outputSamplesTotal) {
+                            const frame = resampler.generate()!;
+                            const [l, r] = fx.process(frame[0] * masterVolume, frame[1] * masterVolume);
+                            leftBuf[outIdx] = l; rightBuf[outIdx++] = r;
                         }
+                        currentCycle++;
                     }
-                    
-                    currentCycle++;
-                }
-                
-                if (currentCycle < totalCycles) {
-                    if (onProgress) onProgress(outIdx / outputSamplesTotal);
-                    setTimeout(processChunk, 0); 
-                } else {
-                    if (onProgress) onProgress(1.0);
-                    // Trim buffer to actual size generated
-                    const finalL = leftBuf.slice(0, outIdx);
-                    const finalR = rightBuf.slice(0, outIdx);
-                    resolve(createWavFile(finalL, OUTPUT_RATE, 2, finalR));
-                }
+                    if (currentCycle < paddedCycles) {
+                        onProgress?.(outIdx / outputSamplesTotal);
+                        setTimeout(processChunk, 0);
+                    } else {
+                        onProgress?.(1);
+                        resolve(createWavFile(leftBuf, OUTPUT_RATE, 2, rightBuf));
+                    }
+                } catch (error) { reject(error); }
             };
             processChunk();
         });

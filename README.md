@@ -144,6 +144,14 @@ The **Dr.SID** workspace uses `DrSid` and `DrSidService` for drum banks, pattern
 
 ### Audio, mastering, and export
 
+Live playback and WAV export share the actual mastering DSP kernel, including
+EQ, linked compression, tape, stereo effects, DC blocking and peak limiting.
+Voice pan/solo/mute are respected in both paths. Instrument previews run
+independently of the paused song. WAV export retains the frame-defined duration
+and adds a one-second gate-release/effect tail. See the
+[audio audit and fidelity limits](docs/AUDIO_AUDIT.md) for timing, validation,
+signal-path differences, and the limits of the approximate SID models.
+
 `OfflineSidRenderer` renders audio off the live path. `MasteringChain` applies the mastering DSP configuration. `audioExportService.ts` produces WAV blobs; MIDI export is available through `midiExportService.ts` and `midiService.ts`; JSON and SWM exports are handled by their respective services. Export controls are enabled only when the loaded source/project provides the required data.
 
 MIDI export defaults to the original trace, raw timing and 9600 PPQ. It preserves
@@ -164,6 +172,7 @@ The workspace includes standard waveform display, register/chip inspection, NMOS
 
 ## Documentation
 
+- [Audio audit](docs/AUDIO_AUDIT.md) — SID/filter/mastering corrections, regression tests, export boundaries, and fidelity limits
 - [SID-to-MIDI export](docs/SID_TO_MIDI.md) — timing, pitch bends, controllers, regression checks, and conversion limits
 - [Architecture](docs/ARCHITECTURE.md) — module boundaries, data flow, and runtime responsibilities
 - [Development](docs/DEVELOPMENT.md) — setup, validation commands, manual test matrix, and security guidance

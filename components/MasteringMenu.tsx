@@ -58,7 +58,7 @@ const FilterVisualizer = memo(({ regs }: { regs: number[] }) => {
         const w = canvas.width, h = canvas.height;
         ctx.clearRect(0, 0, w, h);
 
-        const fc = ((regs[SID_REG.FC_LO] & 0x07) << 8) | regs[SID_REG.FC_HI];
+        const fc = (regs[SID_REG.FC_LO] & 0x07) | (regs[SID_REG.FC_HI] << 3);
         const res = (regs[SID_REG.RES_FILT] >> 4) / 15.0;
         const mode = regs[SID_REG.MODE_VOL] >> 4;
 

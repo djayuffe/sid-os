@@ -47,8 +47,7 @@ class Slew {
 
 const noise12FromLfsr = (l) => (
   (((l >> 22) & 1) << 11) | (((l >> 20) & 1) << 10) | (((l >> 16) & 1) << 9)  | (((l >> 13) & 1) << 8)  |
-  (((l >> 11) & 1) << 7)  | (((l >> 7)  & 1) << 6)  | (((l >> 4)  & 1) << 5)  | (((l >> 2)  & 1) << 4)  |
-  (((l >> 1)  & 1) << 3)  | (((l >> 0)  & 1) << 2)  | (((l >> 17) & 1) << 1)  | (((l >> 19) & 1) << 0)
+  (((l >> 11) & 1) << 7)  | (((l >> 7)  & 1) << 6)  | (((l >> 4)  & 1) << 5)  | (((l >> 2)  & 1) << 4)
 ) & 0xFFF;
 
 class Voice {
@@ -125,7 +124,7 @@ class Voice {
 
     if (this.envState === ENV_ATTACK) {
       if (this.env < 0xFF) this.env = (this.env + 1) & 0xFF;
-      else this.envState = ENV_DECAY;
+      if (this.env === 0xFF) this.envState = ENV_DECAY;
       return;
     }
     const p = expPeriodForEnv(this.env);
@@ -134,7 +133,7 @@ class Voice {
     if (this.expCount < this.expPeriod) return;
     this.expCount = 0;
     const sus = ((this.sr >> 4) & 0xF) * 17;
-    if (this.envState === ENV_DECAY) {
+    if (this.envState === ENV_DECAY || this.envState === ENV_SUSTAIN) {
       if (this.env > sus) this.env = (this.env - 1) & 0xFF; else this.envState = ENV_SUSTAIN;
     } else if (this.envState === ENV_RELEASE) {
       if (this.env > 0) this.env = (this.env - 1) & 0xFF; else this.envState = ENV_IDLE;
@@ -151,7 +150,7 @@ class Voice {
 
     if (noWave) {
       this.raw12 = 0;
-      return 2048;
+      return 2047.5;
     }
 
     const acc = ((ctrl & 0x08) !== 0) ? 0 : (this.acc & 0xFFFFFF);
@@ -159,7 +158,7 @@ class Voice {
 
     if (tri || this.model === '8580') {
       const ringActive = (ctrl & 0x04) !== 0;
-      const msb = ringActive ? ((modAcc & 0x800000) !== 0) : ((acc & 0x800000) !== 0);
+      const msb = ((acc ^ (ringActive ? modAcc : 0)) & 0x800000) !== 0;
       let temp = (acc >>> 11) & 0x0FFF;
       if (msb) temp ^= 0x0FFF;
       tV = temp;
@@ -168,7 +167,7 @@ class Voice {
     if (saw || this.model === '8580') sV = (acc >>> 12) & 0x0FFF;
     
     if (pul || this.model === '8580') {
-      const pw = (this.spw.step() | 0) & 0x0FFF;
+      const pw = this.pw & 0x0FFF;
       pV = ((acc >>> 12) >= pw) ? 0x0FFF : 0x0000;
     }
     
@@ -200,7 +199,7 @@ class Voice {
     const raw = this.getWave(modAcc);
     this.se.set(this.env / 255.0);
     const waveMask = (this.ctrl & 0xF0);
-    const isCombined = waveMask && ((waveMask & (waveMask - 0x10)) !== 0); 
+    const isCombined = waveMask && ((waveMask & (waveMask - 1)) !== 0);
     const gain = (isCombined && this.model === '6581') ? 0.85 : 1.0;
     const val = ((raw / 4095.0) - 0.5) * 2.0 * this.se.step() * gain;
     this.output = val;
@@ -246,22 +245,20 @@ class Filter {
     const w0 = 2 * Math.PI * f0 / (sr * 8);
     
     const g = Math.sin(w0) / (1 + Math.cos(w0));
-    const clippedG = Math.max(0.001, Math.min(0.9, g));
+    const clippedG = Math.max(0, Math.min(0.9, g));
     const dampingBase = [2.0, 1.8, 1.6, 1.4, 1.2, 1.1, 1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1][Math.floor(rawRes) & 15] || 1.0;
     const k = this.model === '6581' ? (dampingBase * 0.8) : dampingBase;
     
     let vi = 0, vnf = 0;
-    const CHIP_LEAKAGE = 0.005; 
     
     const muteV3 = (this.mode & 0x08) !== 0;
 
     for (let i = 0; i < 3; i++) {
-        if (i === 2 && muteV3) continue;
+        if (i === 2 && muteV3 && !(this.routes & 4)) continue;
         if ((this.routes >> i) & 1) vi += ins[i]; else vnf += ins[i]; 
     }
     
     if ((this.routes >> 3) & 1) vi += ext; else vnf += ext;
-    vi += CHIP_LEAKAGE; vnf += CHIP_LEAKAGE;
     if (this.model === '6581') vi = Math.tanh(vi * 0.8) * 1.25;
     
     const feedback = (k + clippedG) * this.z1;
@@ -304,7 +301,7 @@ class HifiSidProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
     this.v = [new Voice(0), new Voice(1), new Voice(2)];
-    this.filter = new Filter();
+    this.filter = new Filter(); this.filterR = new Filter();
     
     this.m = new MasteringChain(sampleRate);
     this.dcL = new DualDCNeutralizer(); this.dcR = new DualDCNeutralizer();
@@ -313,53 +310,66 @@ class HifiSidProcessor extends AudioWorkletProcessor {
     this.regs = new Uint8Array(32); this.act = new Uint8Array(32);
     this.mixerGains = [1.0, 1.0, 1.0]; this.mixerPans = [0.0, 0.0, 0.0]; this.masterVol = 0.5;
     this.voiceMask = [true, true, true];
-    this.sc = 0; this.vPeaks = [0, 0, 0]; this.vRms = [0, 0, 0]; this.mPeaks = [0, 0];
+    this.sc = 0; this.vPeaks = [0, 0, 0]; this.vRms = [0, 0, 0]; this.mPeaks = [0, 0]; this.vRmsSamples = 0;
     this.currTemp = 28.0; this.ambientTemp = 28.0;
 
     this.port.onmessage = (e) => {
       const { type, payload } = e.data || {};
+      if (type === 'DISPOSE') { this.stopped = true; return; }
       if (type === 'DATA') { 
           this.ev = payload.events || []; 
-          this.clk = (payload.clock | 0) || 985248; 
-          this.ei = 0; 
-          this.cy = 0; 
-          this.ncQ = 0n; 
-          this.m.reset(); 
-          this.filter.reset(); 
+          this.clk = payload.clock || 985248;
+          this.resetState(0);
       } 
       else if (type === 'PLAY') { 
           this.ply = !!payload; 
-          if (!this.ply) this.m.reset();
-          else this.filter.reset(); 
       } 
       else if (type === 'MODEL') { 
-          this.filter.model = payload; 
+          this.filter.model = payload; this.filterR.model = payload;
           this.v.forEach((v) => (v.model = payload));
           this.m.setModel(payload); 
       } 
       else if (type === 'MASTER') { this.m.updateParams(payload); } 
       else if (type === 'MASK') { this.voiceMask = payload; } 
-      else if (type === 'MIXER') { this.masterVol = payload.masterVolume; payload.voices.forEach((vv, i) => { this.mixerGains[i] = vv.muted ? 0 : vv.volume; this.mixerPans[i] = vv.pan; }); } 
+      else if (type === 'MIXER') { const solo = payload.voices.some(v => v.solo);
+          this.masterVol = Number.isFinite(payload.masterVolume) ? Math.max(0, Math.min(2, payload.masterVolume)) : 0.5;
+          payload.voices.forEach((v,i) => {
+            this.mixerGains[i] = v.muted || (solo && !v.solo) ? 0 : (Number.isFinite(v.volume) ? Math.max(0, Math.min(2,v.volume)) : 1);
+            this.mixerPans[i] = Number.isFinite(v.pan) ? Math.max(-1, Math.min(1,v.pan)) : 0;
+          }); }
       else if (type === 'LIVE') { this.write(payload.reg, payload.val); } 
-      else if (type === 'SPEED') { this.spd = Math.max(0.01, +payload || 1.0); } 
+      else if (type === 'SPEED') { this.spd = Number.isFinite(payload) ? Math.max(0.01, Math.min(4,payload)) : 1; }
       else if (type === 'SEEK') {
-        const tgt = Math.max(0, payload | 0);
-        this.ei = 0; this.cy = 0; this.ncQ = 0n;
-        this.v.forEach((vv) => vv.reset());
-        this.filter.reset();
-        this.regs.fill(0); this.act.fill(0);
-        while (this.ei < this.ev.length && (this.ev[this.ei].cycles | 0) <= tgt) { this.write(this.ev[this.ei].reg, this.ev[this.ei].val); this.ei++; }
-        this.cy = tgt; this.ncQ = BigInt(tgt) << 32n;
+        this.resetState(payload);
       }
     };
   }
 
+  resetState(cycle) {
+    const target = Number.isSafeInteger(cycle) && cycle >= 0 ? cycle : 0;
+    const model = this.filter.model;
+    this.filter = new Filter(); this.filterR = new Filter();
+    this.filter.model = model; this.filterR.model = model;
+    this.v.forEach(v => v.reset());
+    this.m.reset(); this.dcL = new DualDCNeutralizer(); this.dcR = new DualDCNeutralizer();
+    this.regs.fill(0); this.act.fill(0); this.vPeaks.fill(0); this.vRms.fill(0); this.mPeaks.fill(0); this.sc = 0; this.vRmsSamples = 0;
+    this.ei = 0;
+    while (this.ei < this.ev.length && this.ev[this.ei].cycles <= target) {
+      const e = this.ev[this.ei++]; this.write(e.reg,e.val);
+    }
+    this.cy = target; this.ncQ = BigInt(target) << 32n;
+    // A paused seek must update the UI even though the audio callback is silent.
+    this.port.postMessage({ type: 'STATUS', cy: this.cy, regs: Array.from(this.regs), act: Array.from(this.act),
+      vS: this.v.map(v => ({ level: v.env / 255, state: v.phase ?? v.envState, freq: v.f, pw: v.pw, ctrl: v.ctrl, phase: v.acc })),
+      phys: { temp: this.currTemp ?? 30, power: 0.7, vSupply: model === '6581' ? 12 : 9 },
+      vPeaks: [0,0,0], vRms: [0,0,0], mPeaks: [0,0] });
+  }
   write(r, v) {
     r &= 31; v &= 255;
     if (this.regs[r] !== v) this.act[r] = 255;
     this.regs[r] = v;
     if (r < 21) this.v[(r / 7) | 0].write(r % 7, v);
-    else if (r < 25) this.filter.write(r, v);
+    else if (r < 25) { this.filter.write(r,v); this.filterR.write(r,v); }
   }
 
   stepOneSidCycle() {
@@ -367,9 +377,9 @@ class HifiSidProcessor extends AudioWorkletProcessor {
     const p0 = v[0].acc & 0xFFFFFF; const p1 = v[1].acc & 0xFFFFFF; const p2 = v[2].acc & 0xFFFFFF;
     const t0 = (v[0].ctrl & 0x08) !== 0; const t1 = (v[1].ctrl & 0x08) !== 0; const t2 = (v[2].ctrl & 0x08) !== 0;
     
-    const f0 = (v[0].sf.step() | 0) & 0xFFFF;
-    const f1 = (v[1].sf.step() | 0) & 0xFFFF;
-    const f2 = (v[2].sf.step() | 0) & 0xFFFF;
+    const f0 = v[0].f & 0xFFFF;
+    const f1 = v[1].f & 0xFFFF;
+    const f2 = v[2].f & 0xFFFF;
     
     let n0 = t0 ? 0 : ((p0 + f0) & 0xFFFFFF);
     let n1 = t1 ? 0 : ((p1 + f1) & 0xFFFFFF);
@@ -379,9 +389,9 @@ class HifiSidProcessor extends AudioWorkletProcessor {
     const rise1 = ((n1 & 0x800000) !== 0) && ((p1 & 0x800000) === 0);
     const rise2 = ((n2 & 0x800000) !== 0) && ((p2 & 0x800000) === 0);
     
-    if ((v[0].ctrl & 0x02) && rise2) n0 = 0;
-    if ((v[1].ctrl & 0x02) && rise0) n1 = 0;
-    if ((v[2].ctrl & 0x02) && rise1) n2 = 0;
+    if ((v[0].ctrl & 2) && rise2 && !((v[2].ctrl & 2) && rise1)) n0 = 0;
+    if ((v[1].ctrl & 2) && rise0 && !((v[0].ctrl & 2) && rise2)) n1 = 0;
+    if ((v[2].ctrl & 2) && rise1 && !((v[1].ctrl & 2) && rise0)) n2 = 0;
     
     v[0].msbFlipped = ((n0 & 0x800000) !== 0) && ((p0 & 0x800000) === 0);
     v[1].msbFlipped = ((n1 & 0x800000) !== 0) && ((p1 & 0x800000) === 0);
@@ -401,9 +411,11 @@ class HifiSidProcessor extends AudioWorkletProcessor {
   }
 
   process(inputs, outputs) {
+    if (this.stopped) return false;
     const outL = outputs[0][0]; if (!outL) return true;
     const outR = outputs[0][1];
     
+    if (!this.ply) { outL.fill(0); if (outR) outR.fill(0); return true; }
     const safeClk = this.clk || 985248;
     const safeRate = typeof sampleRate !== 'undefined' ? sampleRate : 48000;
     const rateDiv = safeRate > 0 ? safeRate : 48000;
@@ -412,7 +424,7 @@ class HifiSidProcessor extends AudioWorkletProcessor {
     const step = BigInt(Math.floor(rawStep * 4294967296.0));
 
     for (let i = 0; i < outL.length; i++) {
-      let sumL = 0;
+      let sumL = 0, sumR = 0;
       for (let s = 0; s < 8; s++) {
         if (this.ply) {
           this.ncQ += step;
@@ -420,14 +432,14 @@ class HifiSidProcessor extends AudioWorkletProcessor {
           let loopGuard = 5000; 
           while (this.cy < target) {
             if (--loopGuard < 0) {
-                while (this.ei < this.ev.length && (this.ev[this.ei].cycles | 0) <= target) {
+                while (this.ei < this.ev.length && this.ev[this.ei].cycles <= target) {
                     this.write(this.ev[this.ei].reg, this.ev[this.ei].val);
                     this.ei++;
                 }
                 this.cy = target;
                 break;
             }
-            while (this.ei < this.ev.length && (this.ev[this.ei].cycles | 0) <= this.cy) {
+            while (this.ei < this.ev.length && this.ev[this.ei].cycles <= this.cy) {
               this.write(this.ev[this.ei].reg, this.ev[this.ei].val);
               this.ei++;
             }
@@ -444,8 +456,9 @@ class HifiSidProcessor extends AudioWorkletProcessor {
         const v1 = (this.voiceMask[1] ? this.v[1].output : 0) * this.mixerGains[1];
         const v2 = (this.voiceMask[2] ? this.v[2].output : 0) * this.mixerGains[2];
         
-        const monoOutput = this.filter.process([v0, v1, v2], 0, safeRate);
-        sumL += monoOutput;
+        const ins = [v0,v1,v2];
+        sumL += this.filter.process(ins.map((v,j) => v * (1 - Math.max(0,this.mixerPans[j]))), 0, safeRate);
+        sumR += this.filterR.process(ins.map((v,j) => v * (1 + Math.min(0,this.mixerPans[j]))), 0, safeRate);
 
         this.vPeaks[0] = Math.max(this.vPeaks[0], Math.abs(v0));
         this.vPeaks[1] = Math.max(this.vPeaks[1], Math.abs(v1));
@@ -455,7 +468,7 @@ class HifiSidProcessor extends AudioWorkletProcessor {
       
       const avg = sumL * 0.125; 
       const mixL = avg * this.masterVol;
-      const mixR = avg * this.masterVol;
+      const mixR = sumR * 0.125 * this.masterVol;
       
       const dcFreeL = this.dcL.process(mixL);
       const dcFreeR = outR ? this.dcR.process(mixR) : 0;
@@ -469,9 +482,10 @@ class HifiSidProcessor extends AudioWorkletProcessor {
       this.mPeaks[1] = Math.max(this.mPeaks[1], Math.abs(outR ? outR[i] : 0));
     }
 
+    this.vRmsSamples += outL.length * 8;
     if (++this.sc >= 20) {
-      const dt = 20 / safeRate;
-      const totalRms = this.vRms.reduce((a, b) => a + b, 0) / 2560;
+      const dt = this.vRmsSamples / 8 / safeRate;
+      const totalRms = this.vRms.reduce((a, b) => a + b, 0) / Math.max(1,this.vRmsSamples);
       const quiescentP = this.clk === 985248 ? 0.85 : 0.72;
       const totalP = quiescentP + totalRms * 0.5;
       this.currTemp += (12.8 * totalP - 0.16 * (this.currTemp - this.ambientTemp)) * dt;
@@ -481,9 +495,9 @@ class HifiSidProcessor extends AudioWorkletProcessor {
         type: 'STATUS', cy: this.cy, regs: Array.from(this.regs), act: Array.from(this.act),
         vS: this.v.map((vv) => ({ level: vv.env / 255, state: vv.envState, freq: vv.f, pw: vv.pw, ctrl: vv.ctrl, phase: vv.acc })),
         phys: { temp: this.currTemp, power: totalP, vSupply: this.clk === 985248 ? 12.0 : 9.0 },
-        vPeaks: [...this.vPeaks], vRms: this.vRms.map((x) => Math.sqrt(x / 2560)), mPeaks: [...this.mPeaks]
+        vPeaks: [...this.vPeaks], vRms: this.vRms.map((x) => Math.sqrt(x / Math.max(1,this.vRmsSamples))), mPeaks: [...this.mPeaks]
       });
-      this.sc = 0; this.vPeaks.fill(0); this.vRms.fill(0); this.mPeaks.fill(0);
+      this.sc = 0; this.vRmsSamples = 0; this.vPeaks.fill(0); this.vRms.fill(0); this.mPeaks.fill(0);
       for (let i = 0; i < 32; i++) this.act[i] = (this.act[i] * 0.85) | 0;
     }
     return true;

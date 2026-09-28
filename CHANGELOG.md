@@ -6,6 +6,10 @@ All notable changes to SID OS are documented here.
 
 ### Fixed
 
+- Corrected SID oscillator/ring/triangle math, envelope timing, voice-3 filter routing, stereo pan/solo, long seeks, reset isolation, and oversampled RMS metering.
+- Replaced the no-op offline mastering fallback with the shared worklet DSP kernel; connected compressor/EQ/DC/output controls and corrected limiter delay, ceiling and reset.
+- Fixed mono WAV encoding, offline frame duration, stereo export, final resampler lookahead and asynchronous error handling.
+- Isolated tracker instrument audition from song transport and added worklet cleanup. Added generated-audio regression tests and an explicit audio fidelity guide.
 - Unified SID-to-MIDI compatibility exporters; preserved wide slides as continuous bends, multiple same-cycle gate pulses, multi-chip channels and explicit capture timestamps. Default export uses raw trace/timing at 9600 PPQ; heuristic transcription is now opt-in.
 - Removed cumulative NTSC frame-to-cycle rounding drift; preserved long UTF-8 MIDI metadata and initialized pedal/expression receiver state.
 - SID-to-MIDI export now preserves cycle-event note-offs/retriggers, final held-note duration, declared frame rates, low notes, initial tuning bends, and controller zeroes. Corrected cutoff decoding, odd-PPQ quantization, large-file assembly, and tracker cutoff packing; added an independent SMF regression suite.

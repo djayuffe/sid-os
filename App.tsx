@@ -297,6 +297,7 @@ const App: React.FC = () => {
           setPlayer(p);
           return p;
       } catch (err) {
+          p.destroy();
           SystemLogger.log('Audio', 'Audio engine initialization failed.', 'error', err);
           return null;
       }
@@ -501,20 +502,21 @@ const App: React.FC = () => {
   }, []);
 
   const previewInstrument = useCallback(async (instrument: TrackerProject['instruments'][number], note = 60) => {
-      const activePlayer = player || await initPlayer();
-      if (!activePlayer) return;
-      const frequency = midiNoteToFreq(note, clockFreq);
-      activePlayer.liveWrite(0, frequency & 0xFF);
-      activePlayer.liveWrite(1, (frequency >> 8) & 0xFF);
-      activePlayer.liveWrite(2, instrument.pulseWidth & 0xFF);
-      activePlayer.liveWrite(3, (instrument.pulseWidth >> 8) & 0x0F);
-      activePlayer.liveWrite(5, (instrument.attack << 4) | instrument.decay);
-      activePlayer.liveWrite(6, (instrument.sustain << 4) | instrument.release);
-      activePlayer.liveWrite(24, 0x0F);
-      activePlayer.liveWrite(4, instrument.waveform & 0xFE);
-      window.setTimeout(() => activePlayer.liveWrite(4, instrument.waveform | 0x01), 12);
-      window.setTimeout(() => activePlayer.liveWrite(4, instrument.waveform & 0xFE), 360);
-  }, [player, clockFreq]);
+      try {
+          const activePlayer = player || await initPlayer();
+          if (!activePlayer) return;
+          const frequency = midiNoteToFreq(note, clockFreq);
+          await activePlayer.audition([
+              frequency & 0xFF, (frequency >> 8) & 0xFF,
+              instrument.pulseWidth & 0xFF, (instrument.pulseWidth >> 8) & 0x0F,
+              instrument.waveform & 0xFE,
+              (instrument.attack << 4) | instrument.decay,
+              (instrument.sustain << 4) | instrument.release,
+          ], 350, clockFreq);
+      } catch (error) {
+          SystemLogger.log('Audio', 'Instrument preview failed.', 'error', error);
+      }
+  }, [player, clockFreq, engineType, sidModel, masteringParams, mixerParams]);
 
   const previewProjectNote = useCallback((noteName: string, instrumentId: number) => {
       if (!project) return;

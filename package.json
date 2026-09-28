@@ -19,7 +19,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "test:midi": "node tests/run-midi-tests.cjs"
+    "test:midi": "node tests/run-midi-tests.cjs",
+    "test:audio": "node --test tests/audio.test.cjs"
   },
   "dependencies": {
     "react": "19.0.0",

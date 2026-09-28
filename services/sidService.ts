@@ -222,7 +222,7 @@ export function getRegsAtCycle(trace: ParsedTrace | null | undefined, targetCycl
 const F6581_BASE = [220, 221, 222, 225, 230, 240, 260, 300, 380, 500, 750, 1200, 2000, 3500, 6000, 9500, 13500, 16000];
 const F8580_BASE = [0, 20, 50, 100, 200, 400, 800, 1600, 3200, 6400, 12800];
 
-function generateWorkletCode(): string {
+export function generateWorkletCode(): string {
   // We don't inject MASTERING_DSP_CODE via regex anymore to avoid issues.
   // Instead we rely on the implementation inside.
   return `
@@ -235,9 +235,9 @@ const F8580 = __F8580__;
 const ADSR_RATE = [9, 32, 63, 95, 149, 220, 267, 313, 392, 977, 1954, 3126, 3907, 11720, 19532, 31251];
 
 const getExpPeriod = (env) => {
-    if (env >= 255) return 1; if (env >= 93) return 2; if (env >= 54) return 4;
-    if (env >= 26) return 8; if (env >= 14) return 16; if (env >= 6) return 30;
-    return 1;
+    if (env > 93) return 1; if (env > 54) return 2; if (env > 26) return 4;
+    if (env > 14) return 8; if (env > 6) return 16;
+    return env > 0 ? 30 : 1;
 };
 
 class Slew {
@@ -279,14 +279,15 @@ class Voice {
     if (this.phase === 0) { this.env = 0; return; }
     const a = (this.ad >> 4) & 0xF, d = this.ad & 0xF, r = this.sr & 0xF;
     const rate = (this.phase === 1) ? a : ((this.phase === 2 || this.phase === 3) ? d : r);
-    if (++this.rateCount >= ADSR_RATE[rate]) {
+    this.rateCount = (this.rateCount + 1) & 0x7FFF;
+    if (this.rateCount === ADSR_RATE[rate]) {
       this.rateCount = 0;
-      if (this.phase === 1) { if (this.env < 255) this.env++; else this.phase = 2; }
+      if (this.phase === 1) { if (this.env < 255) this.env++; if (this.env === 255) this.phase = 2; }
       else {
         if (++this.expCount >= getExpPeriod(this.env)) {
           this.expCount = 0;
           const sus = (this.sr >> 4) * 17;
-          if (this.phase === 2) { if (this.env > sus) this.env--; else this.phase = 3; }
+          if (this.phase === 2 || this.phase === 3) { if (this.env > sus) this.env--; this.phase = this.env <= sus ? 3 : 2; }
           else if (this.phase === 4) { if (this.env > 0) this.env--; else this.phase = 0; }
         }
       }
@@ -298,7 +299,7 @@ class Voice {
     this.lfsr = ((this.lfsr << 1) | (b22 ^ b17)) & 0x7FFFFF;
   }
   getWave(modAcc) {
-    const ctrl = this.ctrl; if (ctrl & 0x08) return 0;
+    const ctrl = this.ctrl; if (!(ctrl & 0xF0)) return 2048;
     const tri = ctrl & 0x10, saw = ctrl & 0x20, pul = ctrl & 0x40, noi = ctrl & 0x80;
     if (noi) {
       const l = this.lfsr;
@@ -307,15 +308,15 @@ class Voice {
     }
     let tV = 0, sV = 0, pV = 0;
     const ringActive = (ctrl & 0x04) !== 0;
-    const msb = ringActive ? ((modAcc & 0x800000) !== 0) : ((this.acc & 0x800000) !== 0);
+    const msb = ((this.acc ^ (ringActive ? modAcc : 0)) & 0x800000) !== 0;
     
     if (tri) {
       let temp = (this.acc >> 11) & 0x0FFF; 
       if (msb) temp ^= 0x0FFF;
-      tV = (temp << 1) & 0xFFF;
+      tV = temp;
     }
     if (saw) sV = (this.acc >> 12) & 0xFFF;
-    if (pul) pV = ((this.acc >> 12) >= (this.spw.step() & 0xFFF) ? 0xFFF : 0x000);
+    if (pul) pV = ((this.acc >> 12) >= (this.pw & 0xFFF) ? 0xFFF : 0x000);
     
     const active = (tri?1:0) + (saw?1:0) + (pul?1:0);
     if (active === 0) return 0;
@@ -360,12 +361,12 @@ class Filter {
     const rawCut = this.scut.step();
     const f0 = (this.model === '8580' ? F8580 : F6581)[Math.floor(rawCut)&2047];
     const fs8 = sampleRate * 8;
-    const g = Math.min(0.9, Math.max(0.001, Math.tan(3.14159 * f0 / fs8)));
+    const g = Math.min(0.9, Math.max(0, Math.tan(3.14159 * f0 / fs8)));
     const k = [1.8,1.6,1.4,1.2,1.0,0.8,0.6,0.5,0.4,0.3,0.2,0.1,0.05,0.02,0.01,0.005][this.res];
     let vi = 0, vnf = 0;
     const muteV3 = (this.mode & 0x08) !== 0;
     for(let i=0; i<3; i++) { 
-        if (i === 2 && muteV3) continue;
+        if (i === 2 && muteV3 && !(this.routes & 4)) continue;
         if ((this.routes >> i) & 1) vi += ins[i]; else vnf += ins[i]; 
     }
     if ((this.routes >> 3) & 1) vi += ext; else vnf += ext;
@@ -391,45 +392,73 @@ class SidProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
     this.v = [new Voice(0), new Voice(1), new Voice(2)];
-    this.f = new Filter(); this.m = new MasteringChain(sampleRate); this.d = new Decim();
+    this.f = new Filter(); this.fR = new Filter(); this.m = new MasteringChain(sampleRate); this.d = new Decim(); this.dR = new Decim();
     this.ev = []; this.ei = 0; this.cy = 0; this.ncQ = 0n; this.clk = 985248; this.spd = 1.0; this.ply = false;
     this.regs = new Uint8Array(32); this.act = new Uint8Array(32);
-    this.msk = [true, true, true]; this.sc=0; this.vPeaks=[0,0,0]; this.vRms=[0,0,0]; this.mPeaks=[0,0];
-    this.mixerGains = [1.0, 1.0, 1.0]; this.masterVol = 0.5;
+    this.msk = [true, true, true]; this.sc=0; this.vPeaks=[0,0,0]; this.vRms=[0,0,0]; this.mPeaks=[0,0]; this.vRmsSamples = 0;
+    this.mixerGains = [1.0, 1.0, 1.0]; this.mixerPans = [0,0,0]; this.masterVol = 0.5;
     this.port.onmessage = (e) => {
         const { type, payload } = e.data || {};
-        if (type === 'DATA') { this.ev = payload.events || []; this.clk = payload.clock|0; this.ei=0; this.cy=0; this.ncQ=0n; }
-        else if (type === 'PLAY') this.ply = !!payload;
-        else if (type === 'SPEED') this.spd = Math.max(0.01, Number(payload) || 1.0);
-        else if (type === 'MODEL') { this.f.model = payload; this.v.forEach(v=>v.model=payload); }
+        if (type === 'DISPOSE') { this.stopped = true; return; }
+        if (type === 'DATA') { this.ev = payload.events || []; this.clk = payload.clock || 985248; this.resetState(0); }
+        else if (type === 'PLAY') { this.ply = !!payload; }
+        else if (type === 'SEEK') this.resetState(payload);
+        else if (type === 'SPEED') this.spd = Number.isFinite(payload) ? Math.max(0.01, Math.min(4, payload)) : 1;
+        else if (type === 'MODEL') { this.f.model = payload; this.fR.model = payload; this.v.forEach(v=>v.model=payload); this.m.setModel(payload); }
         else if (type === 'MASTER') this.m.updateParams(payload);
         else if (type === 'MASK') this.msk = payload;
         else if (type === 'LIVE') this.write(payload.reg, payload.val);
-        else if (type === 'MIXER') { this.masterVol = payload.masterVolume; payload.voices.forEach((v, i) => { this.mixerGains[i] = v.muted ? 0 : v.volume; }); }
+        else if (type === 'MIXER') { const solo = payload.voices.some(v => v.solo);
+          this.masterVol = Number.isFinite(payload.masterVolume) ? Math.max(0, Math.min(2, payload.masterVolume)) : 0.5;
+          payload.voices.forEach((v,i) => {
+            this.mixerGains[i] = v.muted || (solo && !v.solo) ? 0 : (Number.isFinite(v.volume) ? Math.max(0, Math.min(2,v.volume)) : 1);
+            this.mixerPans[i] = Number.isFinite(v.pan) ? Math.max(-1, Math.min(1,v.pan)) : 0;
+          }); }
     };
+  }
+  resetState(cycle) {
+    const target = Number.isSafeInteger(cycle) && cycle >= 0 ? cycle : 0;
+    const model = this.f.model;
+    this.f = new Filter(); this.fR = new Filter();
+    this.f.model = model; this.fR.model = model;
+    this.v.forEach(v => v.reset());
+    this.m.reset(); this.d = new Decim(); this.dR = new Decim();
+    this.regs.fill(0); this.act.fill(0); this.vPeaks.fill(0); this.vRms.fill(0); this.mPeaks.fill(0); this.sc = 0; this.vRmsSamples = 0;
+    this.ei = 0;
+    while (this.ei < this.ev.length && this.ev[this.ei].cycles <= target) {
+      const e = this.ev[this.ei++]; this.write(e.reg,e.val);
+    }
+    this.cy = target; this.ncQ = BigInt(target) << 32n;
+    // A paused seek must update the UI even though the audio callback is silent.
+    this.port.postMessage({ type: 'STATUS', cy: this.cy, regs: Array.from(this.regs), act: Array.from(this.act),
+      vS: this.v.map(v => ({ level: v.env / 255, state: v.phase ?? v.envState, freq: v.f, pw: v.pw, ctrl: v.ctrl, phase: v.acc })),
+      phys: { temp: this.currTemp ?? 30, power: 0.7, vSupply: model === '6581' ? 12 : 9 },
+      vPeaks: [0,0,0], vRms: [0,0,0], mPeaks: [0,0] });
   }
   write(r, v) {
     r &= 31; v &= 255; if (this.regs[r] !== v) this.act[r] = 255; this.regs[r] = v;
-    if (r < 21) this.v[(r/7)|0].write(r % 7, v); else if (r < 25) this.f.write(r, v);
+    if (r < 21) this.v[(r/7)|0].write(r % 7, v); else if (r < 25) { this.f.write(r,v); this.fR.write(r,v); }
   }
   process(inputs, outputs) {
+    if (this.stopped) return false;
     const outL = outputs[0][0], outR = outputs[0][1]; if (!outL) return true;
+    if (!this.ply) { outL.fill(0); if (outR) outR.fill(0); return true; }
     const step = BigInt(Math.floor(((this.clk * this.spd) / sampleRate / 8) * 4294967296.0));
-    let dcOffset = 0;
-    if (this.f.model === '6581') { const vol = this.f.vol; dcOffset = (vol - 7.5) / 15.0 * 0.08; }
 
     for (let i=0; i<outL.length; i++) {
-      let sum = 0;
+      let sum = 0, sumR = 0;
       for (let s=0; s<8; s++) {
         if (this.ply) {
           this.ncQ += step; const target = Number(this.ncQ >> 32n);
           while (this.cy < target) {
-            while (this.ei < this.ev.length && (this.ev[this.ei].cycles|0) <= this.cy) { this.write(this.ev[this.ei].reg, this.ev[this.ei].val); this.ei++; }
+            while (this.ei < this.ev.length && this.ev[this.ei].cycles <= this.cy) { this.write(this.ev[this.ei].reg, this.ev[this.ei].val); this.ei++; }
             const p0 = this.v[0].acc; const p1 = this.v[1].acc; const p2 = this.v[2].acc;
-            const inc0 = (this.v[0].sf.step() | 0); const inc1 = (this.v[1].sf.step() | 0); const inc2 = (this.v[2].sf.step() | 0);
-            let n0 = (p0 + inc0) & 0xFFFFFF; let n1 = (p1 + inc1) & 0xFFFFFF; let n2 = (p2 + inc2) & 0xFFFFFF;
+            const inc0 = this.v[0].f; const inc1 = this.v[1].f; const inc2 = this.v[2].f;
+            let n0 = (this.v[0].ctrl & 8) ? 0 : (p0 + inc0) & 0xFFFFFF; let n1 = (this.v[1].ctrl & 8) ? 0 : (p1 + inc1) & 0xFFFFFF; let n2 = (this.v[2].ctrl & 8) ? 0 : (p2 + inc2) & 0xFFFFFF;
             const f0 = (n0 & 0x800000) && !(p0 & 0x800000); const f1 = (n1 & 0x800000) && !(p1 & 0x800000); const f2 = (n2 & 0x800000) && !(p2 & 0x800000);
-            if ((this.v[0].ctrl & 0x02) && f2) n0 = 0; if ((this.v[1].ctrl & 0x02) && f0) n1 = 0; if ((this.v[2].ctrl & 0x02) && f1) n2 = 0;
+            if ((this.v[0].ctrl & 2) && f2 && !((this.v[2].ctrl & 2) && f1)) n0 = 0;
+            if ((this.v[1].ctrl & 2) && f0 && !((this.v[0].ctrl & 2) && f2)) n1 = 0;
+            if ((this.v[2].ctrl & 2) && f1 && !((this.v[1].ctrl & 2) && f0)) n2 = 0;
             if (this.v[0].ctrl & 0x08) n0 = 0; if (this.v[1].ctrl & 0x08) n1 = 0; if (this.v[2].ctrl & 0x08) n2 = 0;
             this.v[0].acc = n0; this.v[0].msbFlipped = f0; this.v[1].acc = n1; this.v[1].msbFlipped = f1; this.v[2].acc = n2; this.v[2].msbFlipped = f2;
             const b19_0 = (n0 & 0x080000) && !(p0 & 0x080000); const b19_1 = (n1 & 0x080000) && !(p1 & 0x080000); const b19_2 = (n2 & 0x080000) && !(p2 & 0x080000);
@@ -437,7 +466,7 @@ class SidProcessor extends AudioWorkletProcessor {
             if (this.v[1].ctrl & 0x08) this.v[1].lfsr = 0x7FFFF8; else if (b19_1) this.v[1].clockNoise();
             if (this.v[2].ctrl & 0x08) this.v[2].lfsr = 0x7FFFF8; else if (b19_2) this.v[2].clockNoise();
             this.v.forEach(x => x.stepEnv());
-            this.v[0].accumulate(p2); this.v[1].accumulate(p0); this.v[2].accumulate(p1);
+            this.v[0].accumulate(n2); this.v[1].accumulate(n0); this.v[2].accumulate(n1);
             this.cy++;
           }
         } else {
@@ -445,20 +474,21 @@ class SidProcessor extends AudioWorkletProcessor {
         }
         const v0 = this.v[0].getSample(); const v1 = this.v[1].getSample(); const v2 = this.v[2].getSample();
         const ins = [(this.msk[0]?v0:0) * this.mixerGains[0], (this.msk[1]?v1:0) * this.mixerGains[1], (this.msk[2]?v2:0) * this.mixerGains[2]];
-        if (this.f.model === '6581') { ins[0] += dcOffset * 0.1; ins[1] += dcOffset * 0.1; ins[2] += dcOffset * 0.1; }
-        sum += this.f.process(ins, 0);
+        sum += this.f.process(ins.map((v,j) => v * (1 - Math.max(0,this.mixerPans[j]))), 0);
+        sumR += this.fR.process(ins.map((v,j) => v * (1 + Math.min(0,this.mixerPans[j]))), 0);
         for(let j=0; j<3; j++) { let val=Math.abs(ins[j]); this.vPeaks[j]=Math.max(this.vPeaks[j], val); this.vRms[j]+=val*val; }
       }
-      let avg = sum / 8.0; if (this.f.model === '6581') avg += dcOffset;
-      const [fL, fR] = this.m.process((this.d.proc(avg)) * this.masterVol, (this.d.proc(avg)) * this.masterVol);
+      let avg = sum / 8.0, avgR = sumR / 8.0;
+      const [fL, fR] = this.m.process(this.d.proc(avg) * this.masterVol, this.dR.proc(avgR) * this.masterVol);
       outL[i] = fL; if (outR) outR[i] = fR;
       this.mPeaks[0]=Math.max(this.mPeaks[0], Math.abs(fL)); this.mPeaks[1]=Math.max(this.mPeaks[1], Math.abs(fR));
     }
+    this.vRmsSamples += outL.length * 8;
     if (++this.sc >= 15) {
       this.regs[0x1B] = (this.v[2].raw12 >> 4) & 0xFF;
       this.regs[0x1C] = this.v[2].env;
-      this.port.postMessage({ type:'STATUS', cy:this.cy, regs:Array.from(this.regs), act:Array.from(this.act), vS:this.v.map(v=>({level:v.env/255, state:v.envState, freq:v.f, pw:v.pw, ctrl:v.ctrl, phase: v.acc})), phys:{temp:30+this.vRms.reduce((a,b)=>a+b,0)*15, power:0.7, vSupply:12}, vPeaks:[...this.vPeaks], vRms:this.vRms.map(x=>Math.sqrt(x/1920)), mPeaks:[...this.mPeaks] });
-      this.sc=0; this.vPeaks.fill(0); this.vRms.fill(0); this.mPeaks.fill(0);
+      this.port.postMessage({ type:'STATUS', cy:this.cy, regs:Array.from(this.regs), act:Array.from(this.act), vS:this.v.map(v=>({level:v.env/255, state:v.phase, freq:v.f, pw:v.pw, ctrl:v.ctrl, phase: v.acc})), phys:{temp:30+this.vRms.reduce((a,b)=>a+b,0)/Math.max(1,this.vRmsSamples)*15, power:0.7, vSupply:12}, vPeaks:[...this.vPeaks], vRms:this.vRms.map(x=>Math.sqrt(x/Math.max(1,this.vRmsSamples))), mPeaks:[...this.mPeaks] });
+      this.sc=0; this.vRmsSamples=0; this.vPeaks.fill(0); this.vRms.fill(0); this.mPeaks.fill(0);
     }
     return true;
   }
@@ -475,6 +505,13 @@ export class SidPlayer {
   ctx: AudioContext; isPlaying = false;
   clk = CLOCK_PAL;
   readyPromise: Promise<void> | null = null;
+  private processorName = 'sid-processor';
+  private model: '6581' | '8580' = '6581';
+  private mastering?: MasteringParams;
+  private mixer?: MixerParams;
+  private previewNode: AudioWorkletNode | null = null;
+  private previewTimer: ReturnType<typeof setTimeout> | null = null;
+  private previewGeneration = 0;
 
   constructor(ctx: AudioContext) { this.ctx = ctx; }
 
@@ -512,7 +549,8 @@ export class SidPlayer {
         } finally {
           URL.revokeObjectURL(url);
         }
-        this.node = new AudioWorkletNode(this.ctx, procName);
+        this.node = new AudioWorkletNode(this.ctx, procName, { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2] });
+        this.processorName = procName;
         this.node.connect(this.ctx.destination);
         
         this.node.port.onmessage = (e) => {
@@ -522,12 +560,14 @@ export class SidPlayer {
             this.volatileVoicePeaks = e.data.vPeaks; this.volatileVoiceRms = e.data.vRms; this.volatileMasterPeaks = e.data.mPeaks;
           }
         };
-    })();
+    })().catch(error => { this.readyPromise = null; throw error; });
     return this.readyPromise;
   }
 
   async setData(ev: SidEvent[], clk?: number) {
       await this.readyPromise; 
+      if (!Array.isArray(ev) || ev.some(e => !e || !Number.isSafeInteger(e.cycles) || e.cycles < 0 || !Number.isInteger(e.reg) || e.reg < 0 || e.reg > 31 || !Number.isInteger(e.val) || e.val < 0 || e.val > 255)) throw new Error('Invalid SID event');
+      if (clk !== undefined && (!Number.isFinite(clk) || clk < 100_000 || clk > 2_000_000)) throw new Error('Invalid SID clock');
       const sorted = [...ev].sort((a,b) => a.cycles - b.cycles);
       // Trace formats commonly omit $D418 when it is implicit in a frame dump.
       // A fresh worklet starts at volume zero, so establish a sensible SID
@@ -540,7 +580,7 @@ export class SidPlayer {
 
   async setPlaybackSpeed(speed: number) {
       await this.readyPromise;
-      this.node?.port.postMessage({ type: 'SPEED', payload: Math.max(0.01, Number(speed) || 1) });
+      this.node?.port.postMessage({ type: 'SPEED', payload: Number.isFinite(speed) ? Math.max(0.01, Math.min(4, speed)) : 1 });
   }
   
   async setVoiceMask(m: [boolean, boolean, boolean]) { await this.readyPromise; this.node?.port.postMessage({ type: 'MASK', payload: m }); }
@@ -552,14 +592,56 @@ export class SidPlayer {
   }
   async pause() { await this.readyPromise; this.isPlaying = false; this.node?.port.postMessage({ type: 'PLAY', payload: false }); }
   async seek(cycles: number) { await this.readyPromise; this.node?.port.postMessage({ type: 'SEEK', payload: cycles }); }
-  async setModel(model: '6581' | '8580') { await this.readyPromise; this.node?.port.postMessage({ type: 'MODEL', payload: model }); }
-  async setMasteringParams(p: MasteringParams) { await this.readyPromise; this.node?.port.postMessage({ type: 'MASTER', payload: p }); }
-  async setMixerParams(p: MixerParams) { await this.readyPromise; this.node?.port.postMessage({ type: 'MIXER', payload: p }); }
+  async setModel(model: '6581' | '8580') { this.model = model; await this.readyPromise; this.node?.port.postMessage({ type: 'MODEL', payload: model }); }
+  async setMasteringParams(p: MasteringParams) { this.mastering = p; await this.readyPromise; this.node?.port.postMessage({ type: 'MASTER', payload: p }); }
+  async setMixerParams(p: MixerParams) { this.mixer = p; await this.readyPromise; this.node?.port.postMessage({ type: 'MIXER', payload: p }); }
+
+  /** Isolated, cycle-timed audition: never changes song registers or transport. */
+  async audition(registers: number[], durationMs = 350, clock = this.clk) {
+      if (registers.length !== 7 || registers.some(v => !Number.isInteger(v) || v < 0 || v > 255)) throw new Error('Audition requires seven voice-register bytes');
+      if (!Number.isFinite(clock) || clock < 100_000 || clock > 2_000_000) throw new Error('Invalid SID clock');
+      if (!Number.isFinite(durationMs) || durationMs < 1 || durationMs > 10000) throw new Error('Invalid audition duration');
+      this.stopAudition();
+      const generation = this.previewGeneration;
+      await this.readyPromise;
+      if (!this.node || generation !== this.previewGeneration) return;
+      if (this.ctx.state === 'suspended') await this.ctx.resume();
+      if (generation !== this.previewGeneration) return;
+      const preview = new AudioWorkletNode(this.ctx, this.processorName, { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2] });
+      this.previewNode = preview;
+      const events = registers.flatMap((val, reg) => reg === 4 ? [] : [{ cycles: 0, reg, val }]);
+      events.push({ cycles: 0, reg: 24, val: 15 }, { cycles: 0, reg: 4, val: (registers[4] & 0xF0) | 1 });
+      events.push({ cycles: Math.round(durationMs * clock / 1000), reg: 4, val: registers[4] & 0xF0 });
+      preview.port.postMessage({ type: 'MODEL', payload: this.model });
+      if (this.mastering) preview.port.postMessage({ type: 'MASTER', payload: this.mastering });
+      preview.port.postMessage({ type: 'MIXER', payload: {
+          masterVolume: this.mixer?.masterVolume ?? 0.5,
+          voices: Array.from({ length: 3 }, () => ({ volume: 1, pan: 0, muted: false, solo: false }))
+      } });
+      preview.port.postMessage({ type: 'DATA', payload: { events, clock } });
+      preview.port.postMessage({ type: 'PLAY', payload: true });
+      preview.connect(this.ctx.destination);
+      // Worst-case decay from full envelope at this release rate, plus FX tail.
+      const rates = [9,32,63,95,149,220,267,313,392,977,1954,3126,3907,11720,19532,31251];
+      const releaseMs = 756 * rates[registers[6] & 15] / clock * 1000;
+      this.previewTimer = setTimeout(() => this.stopAudition(), durationMs + releaseMs + 1000);
+  }
+
+  stopAudition() {
+      this.previewGeneration++;
+      if (this.previewTimer !== null) clearTimeout(this.previewTimer);
+      this.previewTimer = null;
+      this.previewNode?.port.postMessage({ type: 'DISPOSE' });
+      this.previewNode?.disconnect();
+      this.previewNode = null;
+  }
   
   liveWrite(reg: number, val: number) { this.node?.port.postMessage({ type: 'LIVE', payload: { reg, val } }); }
 
   getEstimatedCycles() { return this.volatileCycles; }
   destroy() {
+      this.stopAudition();
+      this.node?.port.postMessage({ type: 'DISPOSE' });
       this.node?.disconnect();
       this.node = null;
       this.readyPromise = null;
