@@ -65,12 +65,12 @@ export const traceToTrackerProject = async (trace: ParsedTrace): Promise<Tracker
 
         const frame = trace.frames[f];
         
-        const fc = (frame[21] | (frame[22] << 8));
+        const fc = (frame[21] & 7) | (frame[22] << 3);
         const resRoute = frame[23];
         const modeVol = frame[24];
         
         const prevFrame = f > 0 ? trace.frames[f-1] : null;
-        const prevFc = prevFrame ? (prevFrame[21] | (prevFrame[22] << 8)) : fc;
+        const prevFc = prevFrame ? ((prevFrame[21] & 7) | (prevFrame[22] << 3)) : fc;
         const prevResRoute = prevFrame ? prevFrame[23] : resRoute;
         const prevModeVol = prevFrame ? prevFrame[24] : modeVol;
 

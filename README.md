@@ -146,6 +146,13 @@ The **Dr.SID** workspace uses `DrSid` and `DrSidService` for drum banks, pattern
 
 `OfflineSidRenderer` renders audio off the live path. `MasteringChain` applies the mastering DSP configuration. `audioExportService.ts` produces WAV blobs; MIDI export is available through `midiExportService.ts` and `midiService.ts`; JSON and SWM exports are handled by their respective services. Export controls are enabled only when the loaded source/project provides the required data.
 
+MIDI export defaults to the original trace, raw timing and 9600 PPQ. It preserves
+cycle-event gates and tuning, and uses declared pitch-bend ranges for continuous
+slides. All three export entry points share the same register conversion core;
+packed and structured APIs also support multiple SID chips on independent MIDI
+channels. Standard MIDI cannot reproduce SID timbre exactly: keep JSON for source
+registers and use WAV for rendered audio. See the [fidelity guide](docs/SID_TO_MIDI.md).
+
 MIDI export validates BPM, PPQ, selected channels, and the four-byte MIDI VLQ
 range. JSON and project exports preserve source metadata. SWM export is
 available once a valid tracker project exists. WAV export reports failures
@@ -157,6 +164,7 @@ The workspace includes standard waveform display, register/chip inspection, NMOS
 
 ## Documentation
 
+- [SID-to-MIDI export](docs/SID_TO_MIDI.md) — timing, pitch bends, controllers, regression checks, and conversion limits
 - [Architecture](docs/ARCHITECTURE.md) — module boundaries, data flow, and runtime responsibilities
 - [Development](docs/DEVELOPMENT.md) — setup, validation commands, manual test matrix, and security guidance
 - [Workflows](docs/WORKFLOWS.md) — trace, tracker, sound-design, and troubleshooting flows

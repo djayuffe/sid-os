@@ -18,7 +18,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:midi": "node tests/run-midi-tests.cjs"
   },
   "dependencies": {
     "react": "19.0.0",

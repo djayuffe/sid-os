@@ -137,8 +137,8 @@ export const renderProjectToTrace = (project: TrackerProject, clock: number): Pa
         });
 
         // Global Filter Registers
-        regs[21] = cutoff & 0xFF; 
-        regs[22] = (cutoff >> 8) & 0xFF;
+        regs[21] = cutoff & 0x07;
+        regs[22] = (cutoff >> 3) & 0xFF;
         regs[23] = ((resonance & 0xF) << 4) | (filterRoute & 0x0F); 
         regs[24] = ((filterMode & 0xF) << 4) | (volume & 0x0F);
         
@@ -219,5 +219,5 @@ export const renderProjectToTrace = (project: TrackerProject, clock: number): Pa
         }
     }
 
-    return { header: { clock, song: project.meta.title }, frames, events };
+    return { header: { clock, fps: 50, song: project.meta.title }, frames, events };
 };

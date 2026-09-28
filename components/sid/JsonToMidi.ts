@@ -1,7 +1,8 @@
 
 import { SidDump, SidChipState } from './SidTypes';
 import { SystemLogger } from '../../services/Logger';
-import { SidAnalyzer } from '../analysis'; 
+import { SidAnalyzer } from '../analysis';
+import { generateMultiSidMidiFile } from '../../services/midiExportService';
 
 // MIDI Constants
 const TPQ = 480; 
@@ -14,6 +15,8 @@ const clamp7 = (val: number) => clamp(Math.floor(val), 0, 127);
 const clamp14 = (val: number) => clamp(Math.round(val), 0, 16383);
 
 export interface MidiConversionOptions {
+    /** Faithful register conversion is the default. Heuristics are opt-in. */
+    mode?: 'faithful' | 'interpretive';
     quantize?: 'none' | 'auto' | '1/32' | '1/16' | '1/8' | '1/4';
     useExpression?: boolean; 
     fullAutomation?: boolean; 
@@ -26,6 +29,8 @@ export interface MidiConversionOptions {
     humanize?: number; // 0 to 100
 }
 
+type AnalysisOptions = Required<Omit<MidiConversionOptions, 'mode'>>;
+
 // Helpers for binary writing
 class MidiWriter {
   private chunks: Uint8Array[] = [];
@@ -34,10 +39,16 @@ class MidiWriter {
   writeU16(val: number) { this.chunks.push(new Uint8Array([(val>>>8)&0xFF,val&0xFF])); }
   writeBytes(bytes: number[]) { this.chunks.push(new Uint8Array(bytes)); }
   writeVarInt(value: number) {
+    if (!Number.isSafeInteger(value) || value < 0 || value > 0x0FFFFFFF) throw new Error('MIDI delta exceeds the four-byte VLQ range');
     let buffer: number[] = [], v = Math.round(value);
     if (v < 0) v = 0; buffer.push(v & 0x7F);
     while ((v >>>= 7) > 0) buffer.push((v & 0x7F) | 0x80);
     this.writeBytes(buffer.reverse());
+  }
+  writeText(type: number, text: string) {
+    const data = new TextEncoder().encode(text);
+    this.writeVarInt(0); this.writeBytes([0xFF, type]);
+    this.writeVarInt(data.length); this.chunks.push(data);
   }
   toBytes(): Uint8Array {
     let size = 0; for (const c of this.chunks) size += c.length;
@@ -86,11 +97,56 @@ export class JsonToMidiConverter {
   }
 
   public convert(dump: SidDump, options: MidiConversionOptions = {}): Uint8Array {
+    if (!dump?.frames?.length || !Number.isFinite(dump.totalDuration) || dump.totalDuration < 0
+        || !Number.isFinite(dump.detectedRefreshRate) || dump.detectedRefreshRate <= 0) {
+      throw new Error('SID dump requires frames, a nonnegative duration and a positive refresh rate');
+    }
+    if (options.mode !== 'interpretive') {
+      if (options.mode !== undefined && options.mode !== 'faithful') throw new Error('Unknown MIDI conversion mode');
+      if (options.mergeGaps || options.detectDrums || options.convertArpsToChords || options.humanize
+          || options.octaveShift || options.minNoteFrames || options.useExpression
+          || (options.noteDuration && options.noteDuration !== 'gate')) {
+        throw new Error('Heuristic note transformations require mode: interpretive');
+      }
+      if (!dump?.frames?.length) throw new Error('SID dump contains no frames');
+      const chips = dump.frames[0].chips.length;
+      if (chips < 1 || chips > 5 || dump.frames.some(frame => frame.chips.length !== chips)) {
+        throw new Error('Expected one to five consistent SID chips');
+      }
+      const writes = dump.writeLog ?? [];
+      if (!Array.isArray(writes) || writes.some(write => !Number.isInteger(write.chipIdx)
+          || write.chipIdx < 0 || write.chipIdx >= chips)) throw new Error('Invalid SID write-log chip');
+      const clock = dump.metadata.clockFreq;
+      const fps = dump.detectedRefreshRate;
+      const lastCycle = dump.frames.at(-1)!.cycles;
+      // Raw writes retain their CPU-cycle origin, including initialization.
+      // Snapshot-only captures use their explicit timestamps.
+      let lastWriteCycle = 0;
+      for (const write of writes) lastWriteCycle = Math.max(lastWriteCycle, write.cycles);
+      const duration = writes.length > 0
+        ? Math.max(dump.totalDuration, lastCycle / clock, lastWriteCycle / clock)
+        : dump.totalDuration;
+      const quantize = options.quantize ?? 'none';
+      return generateMultiSidMidiFile(Array.from({ length: chips }, (_, chip) => {
+        const events = writes.filter(write => write.chipIdx === chip)
+          .map(({ cycles, reg, val }) => ({ cycles, reg, val }));
+        return {
+          trace: {
+            header: { clock, fps, song: dump.metadata.title, author: dump.metadata.author },
+            frames: dump.frames.map(frame => frame.chips[chip].registers),
+            events: writes.length && !events.length ? [{ cycles: 0, reg: 24, val: 0 }] : events
+          },
+          frameTimes: dump.frames.map(frame => frame.time),
+          endTimeSeconds: duration
+        };
+      }), { bpm: 120, ppq: 9600, channels: [true, true, true],
+        duration: quantize === 'none' ? 'raw' : quantize === 'auto' ? 'smart' : quantize });
+    }
     const writer = new MidiWriter();
     
     const analysis = SidAnalyzer.analyze(dump);
     const useBPM = analysis.estimatedBpm || DEFAULT_BPM;
-    const ticksPerSec = (useBPM * TPQ) / 60;
+    const ticksPerSec = TPQ * 1_000_000 / Math.round(60_000_000 / useBPM);
 
     SystemLogger.log('MidiConv', `Detected BPM: ${Math.round(useBPM)} | Ticks/Sec: ${Math.round(ticksPerSec)}`, 'info');
 
@@ -107,11 +163,11 @@ export class JsonToMidiConverter {
     trk0.writeVarInt(0); trk0.writeBytes([0xFF, 0x58, 0x04, 0x04, 0x02, 0x18, 0x08]); 
     const tempoMicro = Math.round(60000000 / useBPM);
     trk0.writeVarInt(0); trk0.writeBytes([0xFF, 0x51, 0x03, (tempoMicro >> 16) & 0xFF, (tempoMicro >> 8) & 0xFF, tempoMicro & 0xFF]); 
-    trk0.writeVarInt(0); trk0.writeBytes([0xFF, 0x03, title.length, ...title.split('').map(c => c.charCodeAt(0))]);
-    trk0.writeVarInt(0); trk0.writeBytes([0xFF, 0x01, credits.length, ...credits.split('').map(c => c.charCodeAt(0))]);
+    trk0.writeText(0x03, title);
+    trk0.writeText(0x01, credits);
     if (analysis.keySignature && analysis.keySignature !== "Unknown") {
         const keyText = `Key: ${analysis.keySignature}`;
-        trk0.writeVarInt(0); trk0.writeBytes([0xFF, 0x01, keyText.length, ...keyText.split('').map(c => c.charCodeAt(0))]);
+        trk0.writeText(0x01, keyText);
     }
     trk0.writeVarInt(0); trk0.writeBytes([0xFF, 0x2F, 0x00]); 
     trackBuffers.push(trk0.toBytes());
@@ -122,10 +178,9 @@ export class JsonToMidiConverter {
     if (effectiveQuantize === '1/4') gridTicks = TPQ; else if (effectiveQuantize === '1/8') gridTicks = TPQ/2; else if (effectiveQuantize === '1/16') gridTicks = TPQ/4; else if (effectiveQuantize === '1/32') gridTicks = TPQ/8;
 
     let effectiveShift = options.octaveShift !== undefined ? options.octaveShift : 0;
-    if (options.octaveShift === 0) effectiveShift = this.detectOptimalOctaveShift(dump);
 
     const frameCount = dump.frames ? dump.frames.length : 0;
-    const opts: Required<MidiConversionOptions> = { useExpression: true, fullAutomation: true, mergeGaps: true, minNoteFrames: 2, octaveShift: effectiveShift, detectDrums: true, noteDuration: 'smart', convertArpsToChords: false, humanize: 0, ...options, quantize: effectiveQuantize as any };
+    const opts: AnalysisOptions = { useExpression: true, fullAutomation: true, mergeGaps: false, minNoteFrames: 0, octaveShift: effectiveShift, detectDrums: true, noteDuration: 'gate', convertArpsToChords: false, humanize: 0, ...options, quantize: effectiveQuantize as any };
 
     const drumEvents: MidiEvent[] = [];
     const systemEvents: MidiEvent[] = [];
@@ -139,7 +194,7 @@ export class JsonToMidiConverter {
     for (let c = 0; c < chipCount; c++) {
         const sysTrk = new MidiWriter();
         const sName = `SID ${c+1} Filter/System`;
-        sysTrk.writeVarInt(0); sysTrk.writeBytes([0xFF, 0x03, sName.length, ...sName.split('').map(c => c.charCodeAt(0))]);
+        sysTrk.writeText(0x03, sName);
         const auto = new AutomationTrack(0, systemEvents); // Ch 1 for filters usually
         
         for (let i = 0; i < frameCount; i++) { 
@@ -188,14 +243,14 @@ export class JsonToMidiConverter {
           if (channel >= 9) channel++; 
           
           const vName = `Chip ${c+1} Voice ${v + 1}`;
-          trk.writeVarInt(0); trk.writeBytes([0xFF, 0x03, vName.length, ...vName.split('').map(c => c.charCodeAt(0))]);
+          trk.writeText(0x03, vName);
 
           let segments = this.analyzeVoice(dump, c, v, opts);
           if (opts.mergeGaps) segments = this.mergeSegments(segments, 0.05); 
           if (opts.convertArpsToChords) segments = this.detectArpeggios(segments);
 
           // Get instrument suggestion for this specific global voice index
-          const suggestedProg = clamp7(analysis.suggestedInstruments[globalVoiceIdx]?.program || 80);
+          const suggestedProg = clamp7(analysis.suggestedInstruments[globalVoiceIdx]?.program ?? 80);
           
           const events: MidiEvent[] = [
               { tick: 0, type: 'pc', priority: 0, data: [0xC0 | channel, suggestedProg] },
@@ -318,7 +373,7 @@ export class JsonToMidiConverter {
 
     if (drumEvents.length > 0) {
         const drumTrk = new MidiWriter();
-        const dName = "Drums (Ch10)"; drumTrk.writeVarInt(0); drumTrk.writeBytes([0xFF, 0x03, dName.length, ...dName.split('').map(c => c.charCodeAt(0))]);
+        const dName = "Drums (Ch10)"; drumTrk.writeText(0x03, dName);
         this.sortAndWriteTrack(writer, drumTrk, drumEvents);
         trackBuffers.push(drumTrk.toBytes());
     }
@@ -349,7 +404,7 @@ export class JsonToMidiConverter {
 
   private detectBPM(dump: SidDump): number {
       const noteOnsets: number[] = [];
-      const opts: Required<MidiConversionOptions> = { quantize: 'none', mergeGaps: true, minNoteFrames: 1, octaveShift:0, detectDrums:true, noteDuration:'audible', convertArpsToChords:false, useExpression:false, fullAutomation:false, humanize: 0 };
+      const opts: AnalysisOptions = { quantize: 'none', mergeGaps: true, minNoteFrames: 1, octaveShift:0, detectDrums:true, noteDuration:'audible', convertArpsToChords:false, useExpression:false, fullAutomation:false, humanize: 0 };
       
       const chipCount = dump.frames[0]?.chips.length || 1;
       for(let c=0; c<chipCount; c++) {
@@ -406,7 +461,7 @@ export class JsonToMidiConverter {
     return 38; 
   }
 
-  private analyzeVoice(dump: SidDump, cIdx: number, vIdx: number, opts: Required<MidiConversionOptions>): NoteSegment[] {
+  private analyzeVoice(dump: SidDump, cIdx: number, vIdx: number, opts: AnalysisOptions): NoteSegment[] {
     const segments: NoteSegment[] = []; const frameCount = dump.frames.length;
     let activeSegment: NoteSegment | null = null;
     let noteAccum = 0, freqAccum = 0, noteCount = 0;
@@ -421,7 +476,7 @@ export class JsonToMidiConverter {
         const prevV = f > 0 ? dump.frames[f-1].chips[cIdx].voices[vIdx] : v;
 
         const gateHigh = v.gate;
-        const gateEdge = v.gate && !prevV.gate;
+        const gateEdge = v.gate && (!prevV.gate || v.triggered);
         const isNoise = (v.rawWaveform & 0x80) !== 0; 
         const isTonal = !isNoise && v.waveform !== 0;
         const hasLevel = v.envelope > 0.005;
@@ -473,7 +528,7 @@ export class JsonToMidiConverter {
                 activeSegment.isPercussiveEnv = attackFrames < 5 && activeSegment.maxEnvelope > 0.5;
 
                 // Time duration check instead of frame count
-                if ((activeSegment.endTime - activeSegment.startTime) >= 0.02) {
+                if (activeSegment.endFrame - activeSegment.startFrame >= opts.minNoteFrames) {
                      segments.push(activeSegment);
                 }
                 activeSegment = null;
@@ -482,7 +537,8 @@ export class JsonToMidiConverter {
             }
         }
 
-        const validSignal = (v.midiNote > 0 || isNoise) && (gateHigh || (hasLevel && opts.noteDuration !== 'gate'));
+        const validSignal = !v.test && (isNoise || (isTonal && Number.isFinite(v.midiNote) && v.freqReg > 0))
+            && (gateHigh || (hasLevel && opts.noteDuration !== 'gate'));
         
         if (!activeSegment && validSignal) {
              activeSegment = { 
@@ -516,7 +572,7 @@ export class JsonToMidiConverter {
     
     if (activeSegment) {
         activeSegment.endFrame = frameCount; 
-        activeSegment.endTime = dump.frames[frameCount-1].time;
+        activeSegment.endTime = Math.max(dump.totalDuration, dump.frames[frameCount-1].time + 1 / dump.detectedRefreshRate);
         activeSegment.midiNoteFloat = noteAccum / (noteCount || 1); 
         activeSegment.avgFreq = freqAccum / (noteCount || 1);
         activeSegment.endMidi = dump.frames[frameCount-1].chips[cIdx].voices[vIdx].midiNote;

@@ -15,7 +15,7 @@ const MidiExportEditor: React.FC<MidiExportEditorProps> = ({ initialBpm, initial
     const [bpm, setBpm] = useState(initialBpm);
     const [ppq, setPpq] = useState(initialPpq);
     const [duration, setDuration] = useState<NoteDuration>(initialDuration);
-    const [useProject, setUseProject] = useState(true);
+    const [useProject, setUseProject] = useState(false);
     const [channels, setChannels] = useState<[boolean, boolean, boolean]>([true, true, true]);
 
     const PpqOption = ({ val, label }: { val: number, label: string }) => (
@@ -98,15 +98,15 @@ const MidiExportEditor: React.FC<MidiExportEditorProps> = ({ initialBpm, initial
                             <span>{bpm}</span>
                         </span>
                         <input 
-                            type="range" min="60" max="250" step="1" 
+                            type="range" min="20" max="400" step="1"
                             value={bpm} onChange={e => setBpm(parseInt(e.target.value))}
                             className="w-full h-1.5 accent-cyan-500 bg-slate-800 rounded appearance-none cursor-pointer"
                         />
                     </div>
                     <input 
-                        type="number" 
+                        type="number" min="20" max="400"
                         className="w-16 bg-slate-900 border border-slate-700 text-cyan-300 font-bold text-lg text-center rounded focus:outline-none focus:border-cyan-500 shadow-inner"
-                        value={bpm} onChange={e => setBpm(Math.max(1, Math.min(999, parseInt(e.target.value)||120)))}
+                        value={bpm} onChange={e => setBpm(Math.max(20, Math.min(400, parseInt(e.target.value)||120)))}
                     />
                 </div>
             </div>
@@ -119,6 +119,7 @@ const MidiExportEditor: React.FC<MidiExportEditorProps> = ({ initialBpm, initial
                     <PpqOption val={96} label="96" />
                     <PpqOption val={480} label="480 (STD)" />
                     <PpqOption val={960} label="960 (HQ)" />
+                    <PpqOption val={9600} label="9600 (FINE)" />
                 </div>
             </div>
 
@@ -136,6 +137,12 @@ const MidiExportEditor: React.FC<MidiExportEditorProps> = ({ initialBpm, initial
                 </div>
             </div>
 
+            <p className="text-[10px] text-slate-400">
+                For closest timing, choose RAW TRACE, RAW and 9600 PPQ. Notes follow SID gates;
+                slides and arpeggios use pitch bends. Noise, sync, ring modulation and SID timbre
+                cannot be reproduced exactly by a standard MIDI instrument. Keep the JSON trace
+                for the original register data, or export WAV for audio.
+            </p>
             <div className="flex gap-4 pt-4 border-t border-slate-800">
                 <button onClick={onClose} className="flex-1 py-2 text-xs font-bold bg-slate-800 text-slate-400 rounded hover:bg-slate-700 transition-colors">
                     CANCEL

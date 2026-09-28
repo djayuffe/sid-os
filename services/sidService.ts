@@ -163,15 +163,16 @@ export function parseTraceFile(content: string): ParsedTrace | null {
         }
         let events = json.events;
         if (!events || events.length === 0) {
-            const framesPerSecond = Number(json.header?.fps) || 50;
+            const framesPerSecond = json.header?.fps === undefined
+                ? (header.clock >= 1_000_000 ? 60 : 50) : Number(json.header.fps);
             if (!Number.isFinite(framesPerSecond) || framesPerSecond <= 0) throw new Error('Trace FPS must be a positive number');
-            const cyclesPerFrame = Math.max(1, Math.round(header.clock / framesPerSecond));
+            const cyclesPerFrame = header.clock / framesPerSecond;
             const previous = new Array(32).fill(-1);
             events = frames.flatMap((frame: number[], frameIndex: number) => frame.slice(0, 32).flatMap((value, reg) => {
                 const safeValue = Number(value) & 0xFF;
                 if (previous[reg] === safeValue) return [];
                 previous[reg] = safeValue;
-                return [{ cycles: frameIndex * cyclesPerFrame, reg, val: safeValue }];
+                return [{ cycles: Math.floor(frameIndex * cyclesPerFrame), reg, val: safeValue }];
             }));
         } else {
             events = events.map((event: any, index: number) => {
