@@ -4,6 +4,12 @@ All notable changes to SID OS are documented here.
 
 ## Unreleased
 
+### Added
+
+- Musical MIDI-to-SID reduction with protected bass/melody, harmonic diversity, optional inner-voice arpeggiation, held-note restoration and per-import loss diagnostics.
+- MIDI pressure, expression, sostenuto, filter/envelope controllers and registered tuning; optional spare-oscillator ring modulation/sync and shared LP/BP/HP filter arbitration.
+- MIDI reduction settings, detailed conversion guide, and regression coverage for dense chords, drum collisions, pedals, tuning and PAL/NTSC register reconstruction.
+
 ### Fixed
 
 - Corrected SID oscillator/ring/triangle math, envelope timing, voice-3 filter routing, stereo pan/solo, long seeks, reset isolation, and oversampled RMS metering.
@@ -13,7 +19,8 @@ All notable changes to SID OS are documented here.
 - Unified SID-to-MIDI compatibility exporters; preserved wide slides as continuous bends, multiple same-cycle gate pulses, multi-chip channels and explicit capture timestamps. Default export uses raw trace/timing at 9600 PPQ; heuristic transcription is now opt-in.
 - Removed cumulative NTSC frame-to-cycle rounding drift; preserved long UTF-8 MIDI metadata and initialized pedal/expression receiver state.
 - SID-to-MIDI export now preserves cycle-event note-offs/retriggers, final held-note duration, declared frame rates, low notes, initial tuning bends, and controller zeroes. Corrected cutoff decoding, odd-PPQ quantization, large-file assembly, and tracker cutoff packing; added an independent SMF regression suite.
-- Made MIDI note timing deterministic at shared ticks: controller/program changes run first, then note-offs, then note-ons.
+- Preserved authored MIDI event order at shared ticks, including zero-length note pairs; track order breaks cross-track ties.
+- Reduced simultaneous percussion deterministically, corrected retained-hit reporting, bounded drum occupancy and rejected malformed tempo/end-of-track metadata.
 - Added explicit gate-off writes when a SID voice is stolen, plus a bounded release tail for malformed/open-ended MIDI notes.
 - Prevented tracker keyboard auto-repeat from inserting duplicate notes or gates and clamped tracker frame speed to a safe integer range.
 

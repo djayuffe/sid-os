@@ -1,9 +1,8 @@
 
 import { ParsedTrace, SidEvent } from '../types';
-import { CLOCK_PAL, SID_REG } from './sidService';
+import { CLOCK_PAL } from './sidService';
 import { DrumProcessor } from './drumProcessor';
 import { selectSidNotes, type MidiReductionMode, type ReductionNote } from './midiReductionService';
-import { VoiceAllocator, type AllocatedNote } from './voiceAllocator';
 
 const CLAMP = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
 
@@ -424,7 +423,8 @@ export async function compileMidiToSidTrace(midiData: ArrayBuffer, options: Midi
         const drumPriority = (key: number) => [35,36].includes(key) ? 6 : [38,40].includes(key) ? 5
             : [39,41,43,45,47,48,50].includes(key) ? 4 : [49,51,52,55,57,59].includes(key) ? 3
             : [42,44,46].includes(key) ? 1 : 2;
-        const hit = [...pendingDrums.values()].sort((a, b) => drumPriority(b.key) - drumPriority(a.key)
+        const hit = [...pendingDrums.values()].filter(n => Math.round(n.velocity * channels[9].gain) > 0)
+            .sort((a, b) => drumPriority(b.key) - drumPriority(a.key)
             || b.velocity - a.velocity || a.key - b.key || a.id - b.id)[0];
         if (hit && Math.round(hit.velocity * channels[9].gain) > 0) {
             // Each hit has bounded occupancy, after which held melody returns.
@@ -498,7 +498,7 @@ export async function compileMidiToSidTrace(midiData: ArrayBuffer, options: Midi
             if (p.wave & 0x40) {
                 const strength = n.velocity / 127 * ch.gain;
                 const depth = 32 + Math.max(ch.mod, ch.pressure, n.pressure) * 3;
-                const pw = CLAMP(Math.round(p.pw * (0.55 + strength * 0.45) + Math.sin(ch.phase / 2) * depth), 32, 4063);
+                const pw = CLAMP(Math.round(p.pw * (0.55 + strength * 0.45) + Math.sin(ch.phase) * depth), 32, 4063);
                 emit(i * 7 + 2, pw & 255); emit(i * 7 + 3, pw >> 8);
             }
             emit(i * 7 + 4, ctrl);

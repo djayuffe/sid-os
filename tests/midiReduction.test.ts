@@ -90,6 +90,11 @@ test('pressure and modulation control frequency/PWM at a real 5 Hz rate', async 
     assert.ok(Math.max(...values)-Math.min(...values)>200);
     assert.ok(trace.events.some(e=>e.cycles>clock/8 && (e.reg===2||e.reg===3)));
     assert.ok(Math.abs(frequency(at(trace,0.2),0)-Math.round(440*16777216/clock))<3);
+    const width = (time: number) => { const r = at(trace,time); return r[2] | r[3]<<8; };
+    const center = width(0);
+    assert.ok(width(0.15) < center - 300);
+    assert.ok(width(0.25) > center + 300);
+    assert.ok(Math.abs(width(0.2) - center) <= 1);
 });
 
 test('brightness/resonance and ADSR controllers write bounded registers; release keeps filter ownership', async () => {
@@ -181,6 +186,11 @@ test('simultaneous percussion keeps the rhythmic anchor independently of source 
         assert.equal(trace.header.midiReduction!.soundedNotes,1);
         assert.equal(trace.header.midiReduction!.omittedNotes,2);
     }
+    // A high-priority hit rounded to zero velocity must not hide an audible hit.
+    const quiet = await run([[0,0xb9,7,1],[0,0x99,36,1],[0,0x99,38,127],
+        [240,0x89,36,0],[240,0x89,38,0]]);
+    assert.equal(at(quiet,0)[18],0x81);
+    assert.equal(quiet.header.midiReduction!.soundedNotes,1);
 });
 
 test('zero-length, cancelled and silent drum hits do not preempt held melody', async () => {

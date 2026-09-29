@@ -108,15 +108,24 @@ rejected with an in-app log entry rather than silently repaired.
 ### MIDI-to-SID voice and tone compiler
 
 `services/midiSidService.ts` converts MIDI events into a deterministic SID
-register trace. It maps MIDI notes to the selected PAL/NTSC SID clock, applies a
-two-semitone pitch-bend range and channel modulation, allocates three SID voices
-with reuse/stealing rules, handles sustain-pedal release, and uses FIFO matching
-for overlapping same-note instances. GM program families select SID-appropriate
-patches with waveform, pulse width, ADSR, vibrato, and filter parameters.
-Filtered patches emit cutoff, resonance, routing, and low-pass mode writes at
-the note boundary. Channel 10 is rendered through the dedicated drum processor
-with kick, snare, hats, toms, claps, crashes, choke groups, velocity, and
-release handling.
+register trace. Balanced reduction protects bass and melody, then selects
+harmonic detail with pitch-class diversity and voice continuity. Optional chord
+arpeggiation time-shares inner notes. Held notes can return after displacement,
+and FIFO source identities prevent stale note-offs from cutting replacements.
+Choose the strategy in **Settings → MIDI → THREE SID VOICES** before importing.
+
+GM-family patches use waveforms, pulse width, ADSR and a shared LP/BP/HP filter.
+The compiler maps bend/tuning RPNs, modulation, pressure, expression, sustain,
+sostenuto, brightness, resonance and envelope controls. Bells and leads can use
+spare oscillators for ring modulation or hard sync without taking a selected
+melodic voice. Channel 10 temporarily uses voice 3; simultaneous drum hits are
+reduced by rhythmic priority. Logs report retained, omitted, restored and
+octave-folded notes.
+
+This is a musically informed approximation: three voices and one shared filter
+cannot preserve arbitrary MIDI polyphony, stereo pan, or exact GM timbres.
+See the [MIDI-to-SID guide](docs/MIDI_TO_SID.md) for settings, controller and
+register coverage, formulas, examples, diagnostics and limitations.
 
 Frequency writes use the SID 16-bit phase-increment formula and are rounded
 without 32-bit bitwise truncation. Frame snapshots are taken after same-cycle
@@ -173,6 +182,7 @@ The workspace includes standard waveform display, register/chip inspection, NMOS
 ## Documentation
 
 - [Audio audit](docs/AUDIO_AUDIT.md) — SID/filter/mastering corrections, regression tests, export boundaries, and fidelity limits
+- [MIDI-to-SID reduction](docs/MIDI_TO_SID.md) — bass/melody preservation, arpeggiation, expression, register mapping, and honest conversion limits
 - [SID-to-MIDI export](docs/SID_TO_MIDI.md) — timing, pitch bends, controllers, regression checks, and conversion limits
 - [Architecture](docs/ARCHITECTURE.md) — module boundaries, data flow, and runtime responsibilities
 - [Development](docs/DEVELOPMENT.md) — setup, validation commands, manual test matrix, and security guidance
