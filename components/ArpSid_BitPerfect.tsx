@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, memo, useMemo } from 'react';
 import { SidPlayer } from '../services/sidService';
+import { VoiceAllocator, voiceLayout } from '../services/voiceAllocator';
 import { DrSid, DrSidDrumType } from '../services/drSidService';
 import { ArpPatchService, ModuleState, PRESETS, CC_MAP, Connection, ArpStep, ArpeggiatorState, ArpVcoState } from '../services/arpPatchService';
 import { Zap, Power, Save, FolderOpen, ChevronDown, Activity, Cable, Play, Pause, Disc, RefreshCw, Mic, ArrowRight, ChevronUp } from 'lucide-react';
@@ -546,6 +547,21 @@ const ArpSidBitPerfect: React.FC<ArpSidProps> = ({ player, onInit }) => {
     const arpNoteRef = useRef<number>(-1);
     
     const voiceAssignments = useRef<[number, number, number]>([-1, -1, -1]);
+    const allocator = useRef(new VoiceAllocator());
+    const renderedNotes = useRef<string[]>(['', '', '']);
+    const renderedChannels = useRef([-1, -1, -1]);
+    const silencedVoices = useRef([false, false, false]);
+
+    const syncHeldNotes = useCallback(() => {
+        const entries = allocator.current.activeNotes;
+        const ms = midiState.current;
+        ms.activeNotes = new Set(entries.map(entry => entry.note));
+        ms.gate = allocator.current.slots.some(Boolean);
+        ms.lastNote = entries.at(-1)?.note ?? -1;
+        ms.velocity = (entries.at(-1)?.velocity ?? 0) / 127;
+        voiceAssignments.current = voiceLayout(allocator.current, true).map(entry => entry?.note ?? -1) as [number, number, number];
+        setActiveKeys(Array.from(ms.activeNotes));
+    }, []);
 
     // --- DOM GEOMETRY CACHING ---
     const updateJackLocations = useCallback(() => {
@@ -578,18 +594,42 @@ const ArpSidBitPerfect: React.FC<ArpSidProps> = ({ player, onInit }) => {
 
     const panic = useCallback(() => {
         if (player) {
+            for (const reg of [4, 11, 18]) player.node?.port.postMessage({ type: 'LIVE', payload: { reg, val: 0 } });
             player.node?.port.postMessage({ type: 'LIVE', payload: { reg: 0x18, val: 0x00 } }); 
-            setTimeout(() => {
-                player.setMixerParams({
-                    voices: [{volume:1,pan:0,muted:false,solo:false},{volume:1,pan:0,muted:false,solo:false},{volume:1,pan:0,muted:false,solo:false}],
-                    masterVolume: 0.8
-                });
-            }, 50);
         }
-        midiState.current.activeNotes.clear();
-        midiState.current.gate = false;
-        setActiveKeys([]);
-    }, [player]);
+        allocator.current = new VoiceAllocator();
+        renderedNotes.current = ['', '', ''];
+        renderedChannels.current = [-1, -1, -1];
+        silencedVoices.current = [true, true, true];
+        drSid.current.voices.forEach(voice => { voice.active = false; });
+        midiState.current.sustain = false;
+        setHold(false);
+        setManualGate(false);
+        setState(previous => ({ ...previous, sequencer: { ...previous.sequencer, active: false } }));
+        syncHeldNotes();
+    }, [player, syncHeldNotes]);
+
+    useEffect(() => {
+        const releaseKeys = () => panic();
+        window.addEventListener('blur', releaseKeys);
+        return () => {
+            window.removeEventListener('blur', releaseKeys);
+            for (const reg of [4, 11, 18]) player?.node?.port.postMessage({ type: 'LIVE', payload: { reg, val: 0 } });
+        };
+    }, [panic, player]);
+
+    // Device changes/disconnects must not leave keys held by an old input.
+    useEffect(() => {
+        allocator.current = new VoiceAllocator();
+        renderedNotes.current = ['', '', ''];
+        silencedVoices.current = [true, true, true];
+        syncHeldNotes();
+    }, [selectedMidiId, syncHeldNotes]);
+
+    useEffect(() => {
+        // Explicitly starting a gate/sequencer re-arms a previous panic.
+        if (manualGate || state.sequencer.active) silencedVoices.current = [false, false, false];
+    }, [manualGate, state.sequencer.active]);
 
     useEffect(() => {
         if (player) {
@@ -618,7 +658,6 @@ const ArpSidBitPerfect: React.FC<ArpSidProps> = ({ player, onInit }) => {
     
     useEffect(() => { midiState.current.modWheel = liveMod; }, [liveMod]);
     useEffect(() => { midiState.current.pitchBend = liveBend; }, [liveBend]);
-    useEffect(() => { midiState.current.sustain = hold; }, [hold]);
 
     const toggleMic = async () => {
         if (micEnabled) {
@@ -715,48 +754,18 @@ const ArpSidBitPerfect: React.FC<ArpSidProps> = ({ player, onInit }) => {
     }, [handleMouseUpGlobal]);
 
 
-    const playNote = useCallback((n: number, on: boolean, vel: number = 0.8) => {
+    const playNote = useCallback((n: number, on: boolean, vel: number = 0.8, channel: number = 0) => {
         if (!player && onInit) {
             onInit();
-            return;
         }
-        const ms = midiState.current;
-        if (on) { 
-            ms.activeNotes.add(n); ms.lastNote = n; ms.gate = true; ms.velocity = vel;
-        } else { 
-            if (!ms.sustain) { ms.activeNotes.delete(n); if (ms.activeNotes.size === 0) ms.gate = false; }
-        }
-        
-        // Stable Voice Allocation Logic
-        const voices = voiceAssignments.current;
-        if (on) {
-            // Find empty slot or steal oldest (simple round robin for now if full)
-            if (!voices.includes(n)) {
-                let slot = voices.indexOf(-1);
-                if (slot === -1) {
-                    // Rotate
-                    voices[0] = voices[1];
-                    voices[1] = voices[2];
-                    slot = 2;
-                }
-                voices[slot] = n;
-            }
-        } else {
-            // Clear slot with this note
-            const idx = voices.indexOf(n);
-            if (idx !== -1) voices[idx] = -1;
-        }
-        
-        // Unison handling for single note hold (Fatness)
-        const active = Array.from(ms.activeNotes);
-        if (active.length === 1) {
-            voices[0] = voices[1] = voices[2] = active[0];
-        }
-
-        setActiveKeys(Array.from(ms.activeNotes));
-    }, [player, onInit]);
+        if (on && vel > 0) allocator.current.noteOn(channel, n, Math.max(1, Math.min(127, Math.round(vel * 127))));
+        else allocator.current.noteOff(channel, n);
+        syncHeldNotes();
+    }, [player, onInit, syncHeldNotes]);
 
     const loadPreset = useCallback((preset: ModuleState) => {
+        silencedVoices.current = [false, false, false];
+        renderedNotes.current = ['', '', ''];
         const newState = JSON.parse(JSON.stringify(preset));
         setState(newState);
         setCables(newState.cables || []);
@@ -807,7 +816,11 @@ const ArpSidBitPerfect: React.FC<ArpSidProps> = ({ player, onInit }) => {
 
     useEffect(() => {
         if (!navigator.requestMIDIAccess) return;
+        let disposed = false;
+        let connectedAccess: any = null;
         navigator.requestMIDIAccess().then(access => {
+            if (disposed) return;
+            connectedAccess = access;
             setMidiAccess(access);
             const updateInputs = () => {
                 const inputs = Array.from(access.inputs.values());
@@ -815,7 +828,8 @@ const ArpSidBitPerfect: React.FC<ArpSidProps> = ({ player, onInit }) => {
                 setSelectedMidiId(prev => (prev && inputs.some((i: any) => i.id === prev)) ? prev : (inputs.length > 0 ? inputs[0].id : ""));
             };
             updateInputs(); access.onstatechange = updateInputs;
-        });
+        }).catch(error => { if (!disposed) console.warn('MIDI access unavailable; computer keyboard input remains enabled.', error); });
+        return () => { disposed = true; if (connectedAccess) connectedAccess.onstatechange = null; };
     }, []);
 
     useEffect(() => {
@@ -826,14 +840,38 @@ const ArpSidBitPerfect: React.FC<ArpSidProps> = ({ player, onInit }) => {
             setMidiActivity(true); setTimeout(() => setMidiActivity(false), 100);
             const [status, data1, data2] = msg.data;
             const cmd = status & 0xF0;
-            if ((cmd === 0x90 && data2 > 0) && !player && onInit) { onInit(); return; }
-            if (cmd === 0x90 && data2 > 0) playNote(data1, true, data2/127);
-            else if (cmd === 0x80 || (cmd === 0x90 && data2 === 0)) playNote(data1, false);
+            const channel = status & 0x0F;
+            if (cmd === 0x90 && data2 > 0) playNote(data1, true, data2/127, channel);
+            else if (cmd === 0x80 || (cmd === 0x90 && data2 === 0)) playNote(data1, false, 0, channel);
             else if (cmd === 0xE0) { const bend = ((data2 << 7) | data1) / 8192 - 1; midiState.current.pitchBend = bend; setLiveBend(bend); }
             else if (cmd === 0xB0) {
                 const norm = data2 / 127.0;
                 if (data1 === 1) { midiState.current.modWheel = norm; setLiveMod(norm); }
-                if (data1 === 64) { const active = data2 >= 64; setHold(active); midiState.current.sustain = active; }
+                if (data1 === 64) {
+                    const active = data2 >= 64;
+                    setHold(active); midiState.current.sustain = active;
+                    allocator.current.setSustain(channel, active);
+                    syncHeldNotes();
+                }
+                if (data1 === 120 || data1 === 123) {
+                    const previousLayout = voiceLayout(allocator.current, true);
+                    allocator.current.allNotesOff(channel, data1 === 123);
+                    if (data1 === 120) {
+                        for (let index = 0; index < 3; index++) {
+                            if (previousLayout[index]?.channel === channel || renderedChannels.current[index] === channel) {
+                                silencedVoices.current[index] = true;
+                                player?.node?.port.postMessage({ type: 'LIVE', payload: { reg: index * 7 + 4, val: 0 } });
+                            }
+                        }
+                    }
+                    syncHeldNotes();
+                }
+                if (data1 === 121) {
+                    allocator.current.setSustain(channel, false);
+                    midiState.current.pitchBend = 0; midiState.current.modWheel = 0;
+                    setLiveBend(0); setLiveMod(0); setHold(false);
+                    syncHeldNotes();
+                }
                 const mapping = CC_MAP[data1];
                 if (mapping) {
                     let mappedVal = mapping.min + norm * (mapping.max - mapping.min);
@@ -844,7 +882,7 @@ const ArpSidBitPerfect: React.FC<ArpSidProps> = ({ player, onInit }) => {
         };
         input.addEventListener('midimessage', handleMidiMessage);
         return () => { input.removeEventListener('midimessage', handleMidiMessage); };
-    }, [midiAccess, selectedMidiId, playNote, updateVal, player, onInit]);
+    }, [midiAccess, selectedMidiId, playNote, updateVal, player, onInit, syncHeldNotes]);
 
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
@@ -990,19 +1028,12 @@ const ArpSidBitPerfect: React.FC<ArpSidProps> = ({ player, onInit }) => {
                 }
 
                 // Voice Allocation
-                if (!voiceAssignments.current) voiceAssignments.current = [-1, -1, -1];
-                const voices = voiceAssignments.current;
+                const layout = voiceLayout(allocator.current, true);
+                const voices = layout.map(entry => entry?.note ?? -1);
                 if (s.arpeggiator.mode !== 'OFF' && arpNoteRef.current !== -1) {
                     voices[0] = voices[1] = voices[2] = arpNoteRef.current;
-                } else {
-                    // Stable allocation handled by playNote, but fallback for safety
-                    if (voices[0] === -1 && voices[1] === -1 && voices[2] === -1 && heldNotes.length > 0) {
-                         // Emergency sync if lost state
-                         voices[0] = heldNotes[0] || -1;
-                         voices[1] = heldNotes[1] || voices[0];
-                         voices[2] = heldNotes[2] || voices[1];
-                    }
                 }
+                voiceAssignments.current = voices as [number, number, number];
 
                 // Modulations
                 const values = new Map<string, number>();
@@ -1110,6 +1141,7 @@ const ArpSidBitPerfect: React.FC<ArpSidProps> = ({ player, onInit }) => {
                     const i = Number(iVal);
                     const drState = drSid.current.process(i);
                     if (drState) {
+                        renderedNotes.current[i] = 'drum';
                         const off: number = Number(i * 7);
                         const fReg = Math.round((drState.freq * 16777216) / clockFreq);
                         write(off, fReg & 0xFF); write(off+1, fReg >> 8);
@@ -1119,6 +1151,14 @@ const ArpSidBitPerfect: React.FC<ArpSidProps> = ({ player, onInit }) => {
                     }
                     const off: number = i * 7;
                     const note = voices[i];
+                    const identity = s.arpeggiator.mode !== 'OFF' && note >= 0
+                        ? `arp:${arpStepIndex.current}:${note}` : `${layout[i]?.id ?? ''}`;
+                    if (identity !== renderedNotes.current[i]) {
+                        write(off + 4, vco.wave & 0xFE);
+                        renderedNotes.current[i] = identity;
+                        if (identity !== '') silencedVoices.current[i] = false;
+                    }
+                    if (layout[i]) renderedChannels.current[i] = layout[i]!.channel;
                     let freqHz = 440;
                     const fmIn = SAFE((dests[`vco${i+1}_fm`] as number) || 0) * SAFE(vco.fmDepth); 
                     let baseNote = note;
@@ -1158,7 +1198,7 @@ const ArpSidBitPerfect: React.FC<ArpSidProps> = ({ player, onInit }) => {
                         if (s.sequencer.arpMode) gateActive = seqGate && ms.gate; 
                         else gateActive = seqGate;
                     }
-                    else gateActive = ms.gate; 
+                    else gateActive = hasActiveNote;
                     
                     let ctrl = 0;
                     if (vco.enabled) ctrl = vco.wave & 0xF0; 
@@ -1166,7 +1206,7 @@ const ArpSidBitPerfect: React.FC<ArpSidProps> = ({ player, onInit }) => {
                     if (vco.wave & 0x02) ctrl |= 0x02; 
                     if (vco.wave & 0x04) ctrl |= 0x04; 
                     if (vco.wave & 0x08) ctrl |= 0x08; 
-                    write(off+4, ctrl);
+                    if (silencedVoices.current[i]) ctrl = 0;
 
                     const modA = SAFE((dests['env_a'] as number) || 0) * 15; const modD = SAFE((dests['env_d'] as number) || 0) * 15;
                     const modS = SAFE((dests['env_s'] as number) || 0) * 15; const modR = SAFE((dests['env_r'] as number) || 0) * 15;
@@ -1175,6 +1215,8 @@ const ArpSidBitPerfect: React.FC<ArpSidProps> = ({ player, onInit }) => {
                     const sust = CLAMP(Math.floor(SAFE(s.adsr.s) * 15 + modS), 0, 15);
                     const r = CLAMP(Math.floor(SAFE(s.adsr.r) * 15 + modR), 0, 15);
                     write(off+5, (a << 4) | d); write(off+6, (sust << 4) | r);
+                    // Configure pitch/envelope before opening a new gate.
+                    write(off+4, ctrl);
                 });
             }
 
@@ -1365,7 +1407,7 @@ const ArpSidBitPerfect: React.FC<ArpSidProps> = ({ player, onInit }) => {
                     <div className="flex flex-col items-end">
                         <span className="text-[8px] font-bold text-slate-500">VOICES</span>
                         <div className="flex gap-1">
-                            {[0,1,2].map(i => <div key={i} className={`w-2 h-2 rounded-full ${voiceAssignments.current.includes(i) ? 'bg-cyan-500 animate-pulse' : 'bg-black border border-slate-700'}`}></div>)}
+                            {[0,1,2].map(i => <div key={i} className={`w-2 h-2 rounded-full ${voiceAssignments.current[i] >= 0 ? 'bg-cyan-500 animate-pulse' : 'bg-black border border-slate-700'}`}></div>)}
                         </div>
                     </div>
                     <div className="w-48 h-12 bg-black border-2 border-[#6C5EB5] rounded relative overflow-hidden shadow-[inset_0_0_20px_black] flex items-center justify-center">
