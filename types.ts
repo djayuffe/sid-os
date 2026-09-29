@@ -6,6 +6,12 @@ export interface SidHeader {
   copyright?: string;
   fps?: number;
   originalFilename?: string;
+  midiReduction?: {
+    reduction: 'balanced' | 'arpeggio';
+    inputNotes: number; soundedNotes: number; omittedNotes: number;
+    peakPolyphony: number; voiceSteals: number; restoredNotes: number;
+    octaveFoldedNotes: number; coupledUpdates: number;
+  };
 }
 
 export interface VoiceParams {

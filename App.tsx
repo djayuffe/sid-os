@@ -9,6 +9,7 @@ import { ParsedTrace, MasteringParams, MixerParams, LfoConfig, TrackerProject, E
 import { SidPlayer as C64Emulator } from './components/sid/SidPlayer';
 import { parseSidHeader } from './components/sid/SidParser';
 import { compileMidiToSidTrace } from './services/midiSidService';
+import type { MidiReductionMode } from './services/midiReductionService';
 import { traceToTrackerProject } from './services/trackerService';
 import { C64Config } from './components/sid/SidTypes';
 import { OfflineSidRenderer } from './services/OfflineSidRenderer';
@@ -78,6 +79,8 @@ const App: React.FC = () => {
   const [clockFreq, setClockFreq] = useState(CLOCK_PAL);
   const [isProcessing, setIsProcessing] = useState(false);
   const [engineType, setEngineType] = useState<'STD' | 'HIFI'>('HIFI');
+  const [midiReduction, setMidiReduction] = useState<MidiReductionMode>('balanced');
+  const [midiCoupledEffects, setMidiCoupledEffects] = useState(true);
   
   // Tracker State
   const [cursor, setCursor] = useState<EditorCursor>({ patternIdx: 0, row: 0, channel: 0, column: 0 });
@@ -391,8 +394,16 @@ const App: React.FC = () => {
               const buffer = await file.arrayBuffer();
               parsed = await compileMidiToSidTrace(buffer, {
                   clock: clockFreq,
-                  filename: rawName
+                  filename: rawName,
+                  reduction: midiReduction,
+                  coupledEffects: midiCoupledEffects,
               });
+              const report = parsed.header.midiReduction!;
+              SystemLogger.log('MIDI reduction',
+                  report.soundedNotes + '/' + report.inputNotes + ' note instances sounded; ' +
+                  report.omittedNotes + ' omitted, peak ' + report.peakPolyphony + '-note polyphony, ' +
+                  report.restoredNotes + ' restored, ' + report.octaveFoldedNotes + ' octave-folded. Mode: ' + report.reduction,
+                  report.omittedNotes ? 'warn' : 'info', report);
           }
 
           if (parsed) {
@@ -715,7 +726,7 @@ const App: React.FC = () => {
             />
           </div>
 
-          {showSettings && <div className="fixed inset-0 z-[6000] flex items-center justify-center bg-black/80 backdrop-blur-sm"><SettingsModal onClose={() => setShowSettings(false)} crtEnabled={crtEnabled} setCrtEnabled={setCrtEnabled} showHex={showHex} setShowHex={setShowHex} clockFreq={clockFreq} setClockFreq={setClockFreq} fpsOverride={fpsOverride} setFpsOverride={setFpsOverride} luminosity={luminosity} setLuminosity={setLuminosity} sidModel={sidModel} setSidModel={setSidModel} engineType={engineType} setEngineType={setEngineType} emulationConfig={emulationConfig} setEmulationConfig={setEmulationConfig} /></div>}
+          {showSettings && <div className="fixed inset-0 z-[6000] flex items-center justify-center bg-black/80 backdrop-blur-sm"><SettingsModal onClose={() => setShowSettings(false)} crtEnabled={crtEnabled} setCrtEnabled={setCrtEnabled} showHex={showHex} setShowHex={setShowHex} clockFreq={clockFreq} setClockFreq={setClockFreq} fpsOverride={fpsOverride} setFpsOverride={setFpsOverride} luminosity={luminosity} setLuminosity={setLuminosity} sidModel={sidModel} setSidModel={setSidModel} engineType={engineType} setEngineType={setEngineType} midiReduction={midiReduction} setMidiReduction={setMidiReduction} midiCoupledEffects={midiCoupledEffects} setMidiCoupledEffects={setMidiCoupledEffects} emulationConfig={emulationConfig} setEmulationConfig={setEmulationConfig} /></div>}
           {showHelp && <HelpModal onClose={() => setShowHelp(false)} />}
           {showPatternTools && project && <div className="fixed inset-0 z-[6000] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm"><div className="w-full max-w-xl rounded-xl border border-cyan-500/30 bg-[#080b12] p-5 shadow-2xl"><PatternToolsModal channel={cursor.channel} onClose={() => setShowPatternTools(false)} onTranspose={(semitones, wholePattern) => setProject(previous => { if (!previous) return previous; const patternId = previous.subtunes[0]?.orderList[cursor.patternIdx]; return patternId === undefined ? previous : transposePattern(previous, patternId, cursor.channel, semitones, wholePattern); })} onClear={(wholePattern) => setProject(previous => { if (!previous) return previous; const patternId = previous.subtunes[0]?.orderList[cursor.patternIdx]; return patternId === undefined ? previous : clearPattern(previous, patternId, cursor.channel, wholePattern); })} /></div></div>}
           {showMidiExport && traceData && <div className="fixed inset-0 z-[6000] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm"><div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-xl border border-cyan-500/30 bg-[#080b12] p-5 shadow-2xl"><MidiExportEditor initialBpm={120} initialPpq={9600} initialDuration="raw" onExport={onExportMidi} onClose={() => setShowMidiExport(false)} /></div></div>}

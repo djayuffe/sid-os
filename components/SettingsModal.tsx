@@ -4,6 +4,7 @@ import { Monitor, Volume2, Cpu, Grid, Settings, Zap, Repeat } from 'lucide-react
 import { CLOCK_PAL, CLOCK_NTSC } from '../services/sidService';
 import { C64Config } from './sid/SidTypes';
 import { C64Settings } from './C64Settings';
+import type { MidiReductionMode } from '../services/midiReductionService';
 
 interface SettingsModalProps {
     onClose: () => void;
@@ -21,6 +22,10 @@ interface SettingsModalProps {
     setSidModel: (m: '6581' | '8580') => void;
     engineType: 'STD' | 'HIFI';
     setEngineType: (t: 'STD' | 'HIFI') => void;
+    midiReduction?: MidiReductionMode;
+    setMidiReduction?: (mode: MidiReductionMode) => void;
+    midiCoupledEffects?: boolean;
+    setMidiCoupledEffects?: (enabled: boolean) => void;
     emulationConfig?: C64Config;
     setEmulationConfig?: (c: C64Config) => void;
 }
@@ -29,7 +34,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     onClose, crtEnabled, setCrtEnabled, showHex, setShowHex, 
     clockFreq, setClockFreq, fpsOverride, setFpsOverride, 
     luminosity, setLuminosity, sidModel, setSidModel,
-    engineType, setEngineType,
+    engineType, setEngineType, midiReduction, setMidiReduction, midiCoupledEffects, setMidiCoupledEffects,
     emulationConfig, setEmulationConfig
 }) => {
     
@@ -49,7 +54,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     );
 
     return (
-        <div className="flex flex-col gap-6 font-mono select-none">
+        <div className="flex flex-col gap-6 font-mono select-none max-h-[80vh] overflow-y-auto pr-2">
             
             {emulationConfig && setEmulationConfig && (
                 <div className="flex flex-col gap-3">
@@ -58,6 +63,31 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                     </div>
                     <C64Settings config={emulationConfig} onConfigChange={setEmulationConfig} />
                 </div>
+            )}
+
+            {setMidiReduction && (
+                <section className="flex flex-col gap-3 rounded border border-cyan-900 p-3">
+                    <h3 className="text-xs font-bold text-cyan-400">MIDI → THREE SID VOICES</h3>
+                    <label className="text-xs text-slate-300">
+                        Reduction strategy
+                        <select aria-label="MIDI reduction strategy" value={midiReduction}
+                            onChange={e => setMidiReduction(e.target.value as MidiReductionMode)}
+                            className="ml-3 bg-slate-900 border border-slate-700 rounded p-2">
+                            <option value="balanced">Balanced bass / melody / harmony</option>
+                            <option value="arpeggio">Chord arpeggio (12 steps/sec)</option>
+                        </select>
+                    </label>
+                    <label className="flex gap-2 text-xs text-slate-300">
+                        <input type="checkbox" checked={midiCoupledEffects ?? true}
+                            onChange={e => setMidiCoupledEffects?.(e.target.checked)} />
+                        Use spare oscillators for bell ring-modulation / lead sync
+                    </label>
+                    <p className="text-[10px] text-slate-400">
+                        Applies to the next MIDI import. Drums temporarily use one voice.
+                        Arpeggiation changes articulation; mono SID cannot preserve MIDI pan.
+                        See Logs after import for omitted and octave-folded notes.
+                    </p>
+                </section>
             )}
 
             <div className="flex flex-col gap-3">
