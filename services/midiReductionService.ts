@@ -27,16 +27,20 @@ export function selectSidNotes<T extends ReductionNote>(
     }
     while (chosen.length < capacity) {
         const remaining = ordered.filter(n => !chosen.some(c => c.id === n.id));
-        const score = (n: T) =>
+        const scores = new Map(remaining.map(n => [n.id,
             (chosen.some(c => c.key % 12 === n.key % 12) ? 0 : 100) +
             (chosen.some(c => c.channel === n.channel) ? 0 : 24) +
-            (sounding.has(n.id) ? 20 : 0) + (n.down ? 8 : 0) + n.velocity / 8;
-        remaining.sort((a, b) => score(b) - score(a) || a.key - b.key || a.channel - b.channel || a.id - b.id);
+            (sounding.has(n.id) ? 20 : 0) + (n.down ? 8 : 0) + n.velocity / 8]));
+        remaining.sort((a, b) => scores.get(b.id)! - scores.get(a.id)! || a.key - b.key || a.channel - b.channel || a.id - b.id);
         let pick = remaining[0];
         if (mode === 'arpeggio') {
             // Time-share only one compatible instrument/channel, never unrelated timbres.
-            const chord = remaining.filter(n => n.channel === pick.channel && n.program === pick.program)
-                .filter((n, i, group) => group.findIndex(c => c.key === n.key) === i)
+            const pitches = new Set<number>();
+            const chord = remaining.filter(n => {
+                if (n.channel !== pick.channel || n.program !== pick.program || pitches.has(n.key)) return false;
+                pitches.add(n.key);
+                return true;
+            })
                 .sort((a, b) => a.key - b.key || a.id - b.id);
             pick = chord[arpStep % chord.length];
         }

@@ -57,6 +57,7 @@ function getPatch(prog: number): SidPatch {
 }
 
 function parseSmfLocal(midiData: ArrayBuffer) {
+    if (midiData.byteLength > 16 * 1024 * 1024) throw new Error('MIDI import exceeds the 16 MiB safety limit');
     const view = new DataView(midiData);
     const b = new Uint8Array(midiData);
     if (b.length < 14 || view.getUint32(0) !== 0x4d546864) {
@@ -80,6 +81,7 @@ function parseSmfLocal(midiData: ArrayBuffer) {
     const events: any[] = [];
     const tempos: any[] = [];
     let eventOrder = 0;
+    let parsedEvents = 0;
     let ptr = headerLength + 8;
 
     // Corrected VLQ Reader (Big Endian)
@@ -119,7 +121,9 @@ function parseSmfLocal(midiData: ArrayBuffer) {
                 throw new Error('MIDI event time exceeds the supported range');
             }
             if (ptr >= end) throw new Error('Truncated MIDI event after delta time');
-            if (events.length + tempos.length > 500000) throw new Error('MIDI import exceeds the event safety limit');
+            // Bound parser work, including ignored metadata and SysEx, not just
+            // messages retained for musical conversion.
+            if (++parsedEvents > 500000) throw new Error('MIDI import exceeds the event safety limit');
             
             let status = b[ptr];
             let type = 0;
@@ -148,6 +152,7 @@ function parseSmfLocal(midiData: ArrayBuffer) {
             else if (status === 0xFF) { 
                 if (ptr >= end) throw new Error('Truncated MIDI meta event');
                 const mt = b[ptr++]; const ml = readVLQ_BE(end);
+                if (mt > 127) throw new Error('Invalid MIDI meta-event type');
                 if (ptr + ml > end) throw new Error('MIDI meta event exceeds its track');
                 if (mt === 0x51 && ml !== 3) throw new Error('MIDI tempo event must contain three bytes');
                 if (mt === 0x2F) {
@@ -255,11 +260,13 @@ export async function compileMidiToSidTrace(midiData: ArrayBuffer, options: Midi
     const heard = new Set<number>(), folded = new Set<number>(), restored = new Set<number>();
     const report = { inputNotes: 0, soundedNotes: 0, omittedNotes: 0, peakPolyphony: 0, voiceSteals: 0, restoredNotes: 0, octaveFoldedNotes: 0, coupledUpdates: 0, reduction };
     const drum = new DrumProcessor(1);
-    let drumId = -1, drumEnd = 0, drumGateEnd = 0;
+    let drumId = -1, drumEnd = 0, drumGateEnd = 0, drumVelocity = 0;
     const drumQueue: { id: number; key: number }[] = [];
     let serial = 0, current = 0, eventIndex = 0, frameIndex = 0, controlIndex = 0, arpIndex = 0;
     let nextFrame = 0, nextControl = 0, nextArp = 0, released = false;
     let previousCycle = 0, iterations = 0;
+    let allocationDirty = true, allocationArpStep = -1;
+    let desired: HeldNote[] = [];
 
     const emit = (reg: number, value: number, force = false) => {
         const byte = Math.round(value) & 255;
@@ -321,19 +328,25 @@ export async function compileMidiToSidTrace(midiData: ArrayBuffer, options: Midi
             case 120:
                 for (const [id, n] of held) if (n.channel === e.ch) held.delete(id);
                 slots.forEach((s, i) => { if (s.note?.channel === e.ch) clearSlot(i, true); });
-                if (e.ch === 9) { drum.voices[0].active = false; drumId = -1; emit(18, 0); }
+                if (e.ch === 9) {
+                    drumQueue.length = 0;
+                    // Voice 3 may currently belong to another MIDI channel.
+                    if (drumId >= 0) { drum.voices[0].active = false; drumId = -1; emit(18, 0); }
+                }
                 break;
             case 123:
                 for (const n of held.values()) if (n.channel === e.ch) n.down = false;
                 removeReleased(e.ch);
-                if (e.ch === 9) drum.release(0);
+                if (e.ch === 9) { drumQueue.length = 0; drum.release(0); }
                 break;
             case 121: {
                 // Volume, program and registered tuning are not reset by CC121.
                 const reset = new ChannelState();
                 reset.volume = ch.volume; reset.program = ch.program; reset.patch = ch.patch; reset.parameters = ch.parameters;
                 channels[e.ch] = reset;
-                for (const n of held.values()) if (n.channel === e.ch) n.sostenuto = false;
+                for (const n of held.values()) if (n.channel === e.ch) { n.sostenuto = false; n.pressure = 0; }
+                // Release tails still own their captured note/filter state.
+                for (const s of slots) if (s.note?.channel === e.ch) s.note.pressure = 0;
                 removeReleased(e.ch);
                 break;
             }
@@ -369,6 +382,7 @@ export async function compileMidiToSidTrace(midiData: ArrayBuffer, options: Midi
         let drumOutput = drumId >= 0 ? drum.process(0, elapsed, clock) : null;
         if (drumId >= 0 && current >= drumGateEnd) { drum.release(0); drumOutput = drum.process(0, 0, clock); }
         if (drumId >= 0 && (current >= drumEnd || !drum.voices[0].active)) {
+            allocationDirty = true;
             emit(18, 0); drum.voices[0].active = false; drumId = -1; drumOutput = null;
             slots[2] = { note: null, releaseUntil: 0, source: false };
         }
@@ -378,6 +392,7 @@ export async function compileMidiToSidTrace(midiData: ArrayBuffer, options: Midi
         // a quiet hi-hat erase the kick or inflate the retained-note report.
         const pendingDrums = new Map<number, { id: number; key: number; velocity: number }>();
         while (eventIndex < cycleEvents.length && cycleEvents[eventIndex].cycle <= current) {
+            allocationDirty = true;
             const e = cycleEvents[eventIndex++];
             const ch = channels[e.ch];
             if (e.kind === 'pc') { ch.program = e.program; ch.patch = getPatch(e.program); }
@@ -429,27 +444,50 @@ export async function compileMidiToSidTrace(midiData: ArrayBuffer, options: Midi
         if (hit && Math.round(hit.velocity * channels[9].gain) > 0) {
             // Each hit has bounded occupancy, after which held melody returns.
             clearSlot(2, true); emit(18, 0, true);
-            drum.trigger(0, hit.key, Math.round(hit.velocity * channels[9].gain)); drumId = hit.id;
+            drumVelocity = hit.velocity;
+            drum.trigger(0, hit.key, Math.round(drumVelocity * channels[9].gain)); drumId = hit.id;
             const type = drum.voices[0].patch!.type;
             const gateSeconds = type === 'CRASH' ? 0.6 : type === 'HAT_OPEN' ? 0.22 : type === 'HAT_CLOSED' ? 0.035 : 0.12;
             drumGateEnd = current + Math.round(clock * gateSeconds);
             drumEnd = drumGateEnd + Math.round(clock * (type === 'CRASH' ? 0.3 : 0.12));
             drumOutput = drum.process(0, 0, clock);
         }
-        if (!released && current >= autoRelease) { held.clear(); drum.release(0); if (drumId >= 0) drumOutput = drum.process(0, 0, clock); released = true; }
+        if (!released && current >= autoRelease) {
+            held.clear(); drum.release(0);
+            if (drumId >= 0) drumOutput = drum.process(0, 0, clock);
+            released = true; allocationDirty = true;
+        }
 
-        const pool = [...held.values()].filter(n => channels[n.channel].gain > 0);
-        report.peakPolyphony = Math.max(report.peakPolyphony, pool.length + (drumId >= 0 ? 1 : 0));
-        const sounding = new Set(slots.filter(s => s.note && (regs[slots.indexOf(s) * 7 + 4] & 1)).map(s => s.note!.id));
-        const desired = selectSidNotes(pool, drumId >= 0 ? 2 : 3, sounding, reduction, Math.floor(current * arpHz / clock));
+        // Apply expression before voice selection, so a silent drum relinquishes
+        // its oscillator at the controller's exact timestamp, not one tick later.
+        if (drumId >= 0) {
+            if (channels[9].gain === 0) {
+                allocationDirty = true;
+                emit(18, 0); drumId = -1; drum.voices[0].active = false; drumOutput = null;
+                slots[2] = { note: null, releaseUntil: 0, source: false };
+            } else {
+                drum.voices[0].velocity = Math.round(drumVelocity * channels[9].gain);
+                drumOutput = drum.process(0, 0, clock);
+            }
+        }
+        const arpStep = Math.floor(current * arpHz / clock);
+        // Pitch/envelope/filter control ticks do not change the held-note pool.
+        // Avoid repeatedly sorting thousands of unchanged notes at 200 Hz.
+        if (allocationDirty || (reduction === 'arpeggio' && allocationArpStep !== arpStep)) {
+            const pool = [...held.values()].filter(n => channels[n.channel].gain > 0);
+            report.peakPolyphony = Math.max(report.peakPolyphony, pool.length + (drumId >= 0 ? 1 : 0));
+            const sounding = new Set(slots.flatMap((s, i) => s.note && (regs[i * 7 + 4] & 1) ? [s.note.id] : []));
+            desired = selectSidNotes(pool, drumId >= 0 ? 2 : 3, sounding, reduction, arpStep);
+            allocationDirty = false; allocationArpStep = arpStep;
+        }
         const wanted = new Set(desired.map(n => n.id));
         for (let i = 0; i < 3; i++) {
             if (i === 2 && drumId >= 0) continue;
             const s = slots[i];
             if (s.source) { emit(i * 7 + 4, 0); s.source = false; }
+            if (s.note && channels[s.note.channel].gain === 0) clearSlot(i, true);
             if (s.note && !wanted.has(s.note.id) && (regs[i * 7 + 4] & 1)) {
-                const muted = channels[s.note.channel].gain === 0;
-                clearSlot(i, muted);
+                clearSlot(i);
             }
             if (s.note && !(regs[i * 7 + 4] & 1) && current >= s.releaseUntil) { emit(i * 7 + 4, 0); s.note = null; }
         }
@@ -504,14 +542,11 @@ export async function compileMidiToSidTrace(midiData: ArrayBuffer, options: Midi
             emit(i * 7 + 4, ctrl);
         }
         if (drumId >= 0 && drumOutput) {
-            if (channels[9].gain === 0) { emit(18, 0); drumId = -1; drum.voices[0].active = false; }
-            else {
-                const d = drumOutput;
-                if (d.ctrl & 1) heard.add(drumId);
-                emit(14, d.freq & 255); emit(15, d.freq >> 8);
-                emit(16, d.pw & 255); emit(17, d.pw >> 8);
-                emit(19, d.adsr.a * 16 + d.adsr.d); emit(20, d.adsr.s * 16 + d.adsr.r); emit(18, d.ctrl);
-            }
+            const d = drumOutput;
+            if (d.ctrl & 1) heard.add(drumId);
+            emit(14, d.freq & 255); emit(15, d.freq >> 8);
+            emit(16, d.pw & 255); emit(17, d.pw >> 8);
+            emit(19, d.adsr.a * 16 + d.adsr.d); emit(20, d.adsr.s * 16 + d.adsr.r); emit(18, d.ctrl);
         }
 
         // There is ONE analog filter, not a filter per MIDI channel. Blend

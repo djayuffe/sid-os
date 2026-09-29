@@ -30,6 +30,7 @@ export const deleteProjectInstrument = (project: TrackerProject, instId: number)
 };
 
 export const updatePatternCell = (project: TrackerProject, patternId: number, rowIdx: number, channel: number, changes: Partial<TrackerRow>): TrackerProject => {
+    if (!Number.isInteger(rowIdx) || rowIdx < 0 || rowIdx >= 64 || !Number.isInteger(channel) || channel < 0 || channel > 2) return project;
     const next = { ...project, patterns: project.patterns.map(p => ({ ...p, rows: [...p.rows] })) };
     const patternIdx = next.patterns.findIndex(p => p.id === patternId);
     
@@ -45,6 +46,8 @@ export const updatePatternCell = (project: TrackerProject, patternId: number, ro
 };
 
 export const updatePatternCellHex = (project: TrackerProject, patternId: number, rowIdx: number, channel: number, column: number, hexChar: string): TrackerProject => {
+    if (!Number.isInteger(rowIdx) || rowIdx < 0 || rowIdx >= 64 || !Number.isInteger(channel) || channel < 0 || channel > 2 ||
+        !Number.isInteger(column) || column < 1 || column > 4 || !/^[0-9a-f]$/i.test(hexChar)) return project;
     const next = { ...project, patterns: project.patterns.map(p => ({ ...p, rows: [...p.rows] })) };
     const patternIdx = next.patterns.findIndex(p => p.id === patternId);
 
@@ -79,6 +82,8 @@ export const updatePatternCellHex = (project: TrackerProject, patternId: number,
 };
 
 export const updateOrderList = (project: TrackerProject, step: number, patternId: number): TrackerProject => {
+    if (!project.subtunes[0] || !Number.isInteger(step) || step < 0 || step >= project.subtunes[0].orderList.length ||
+        !Number.isSafeInteger(patternId) || patternId < 0) return project;
     const next = { ...project, subtunes: [...project.subtunes] };
     const st = { ...next.subtunes[0], orderList: [...next.subtunes[0].orderList] };
     if (step >= 0 && step < st.orderList.length) {
@@ -89,6 +94,7 @@ export const updateOrderList = (project: TrackerProject, step: number, patternId
 };
 
 export const setSequenceLoopPoint = (project: TrackerProject, loopPoint: number): TrackerProject => {
+    if (!project.subtunes[0] || !Number.isInteger(loopPoint) || !project.subtunes[0].orderList.length) return project;
     const next = { ...project, subtunes: [...project.subtunes] };
     const st = { ...next.subtunes[0] };
     if (loopPoint === -1) delete st.loopPosition;
@@ -98,19 +104,23 @@ export const setSequenceLoopPoint = (project: TrackerProject, loopPoint: number)
 };
 
 export const insertSequenceStep = (project: TrackerProject, atIndex: number): TrackerProject => {
+    if (!project.subtunes[0] || !Number.isInteger(atIndex) || atIndex < 0 || atIndex >= project.subtunes[0].orderList.length) return project;
     const next = { ...project, subtunes: [...project.subtunes] };
     const st = { ...next.subtunes[0], orderList: [...next.subtunes[0].orderList] };
     const patToInsert = st.orderList[Math.min(atIndex, st.orderList.length - 1)] ?? 0;
     st.orderList.splice(atIndex + 1, 0, patToInsert);
+    if (st.loopPosition !== undefined && st.loopPosition > atIndex) st.loopPosition++;
     next.subtunes[0] = st;
     return next;
 };
 
 export const deleteSequenceStep = (project: TrackerProject, atIndex: number): TrackerProject => {
+    if (!project.subtunes[0] || !Number.isInteger(atIndex) || atIndex < 0 || atIndex >= project.subtunes[0].orderList.length) return project;
     const next = { ...project, subtunes: [...project.subtunes] };
     const st = { ...next.subtunes[0], orderList: [...next.subtunes[0].orderList] };
     if (st.orderList.length > 1) {
         st.orderList.splice(atIndex, 1);
+        if (st.loopPosition !== undefined && st.loopPosition > atIndex) st.loopPosition--;
         if (st.loopPosition !== undefined && st.loopPosition >= st.orderList.length) st.loopPosition = st.orderList.length - 1;
         next.subtunes[0] = st;
     }
@@ -118,6 +128,7 @@ export const deleteSequenceStep = (project: TrackerProject, atIndex: number): Tr
 };
 
 export const transposePattern = (project: TrackerProject, patternId: number, channel: number, semitones: number, wholePattern: boolean): TrackerProject => {
+    if (!Number.isInteger(semitones) || (!wholePattern && (!Number.isInteger(channel) || channel < 0 || channel > 2))) return project;
     const next = { ...project, patterns: project.patterns.map(p => ({ ...p, rows: [...p.rows] })) };
     const pattern = next.patterns.find(p => p.id === patternId);
     if (pattern) {
@@ -151,6 +162,7 @@ export const transposePattern = (project: TrackerProject, patternId: number, cha
 };
 
 export const clearPattern = (project: TrackerProject, patternId: number, channel: number, wholePattern: boolean): TrackerProject => {
+    if (!wholePattern && (!Number.isInteger(channel) || channel < 0 || channel > 2)) return project;
     const next = { ...project, patterns: project.patterns.map(p => ({ ...p, rows: [...p.rows] })) };
     const pattern = next.patterns.find(p => p.id === patternId);
     if (pattern) {

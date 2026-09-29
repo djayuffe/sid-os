@@ -36,6 +36,7 @@ const { generateHifiWorkletCode } = load('services/hifiSidService.ts');
 const { MasteringChain, MASTERING_DSP_CODE } = load('services/masteringDsp.ts');
 const { OfflineSidRenderer, internals } = load('services/OfflineSidRenderer.ts');
 const { createWavFile, audioBufferToWav } = load('services/audioExportService.ts');
+const { compileMidiToSidTrace } = load('services/midiSidService.ts');
 
 const table = base => Array.from({ length: 2048 }, (_, i) => {
     const p = i / 2047 * (base.length - 1), lo = Math.floor(p), hi = Math.min(lo + 1, base.length - 1);
@@ -73,6 +74,27 @@ function block(p, count = 128) {
 const energy = a => a.reduce((sum, x) => sum + x * x, 0);
 
 for (const kind of ['STD', 'HIFI']) {
+    test(kind + ': compiled MIDI is audible and channel silence closes actual DSP voices', async () => {
+        // Program 16, held C/E/G, expression zero at tick 120, restore at
+        // tick 480, all-sound-off at tick 720. PPQ 480 at default 120 BPM.
+        const track = [0,0xc0,16,0,0x90,60,100,0,0x90,64,100,0,0x90,67,100,
+            120,0xb0,11,0,0x82,0x68,0xb0,11,127,0x81,0x70,0xb0,120,0,0,255,47,0];
+        const midi = Uint8Array.from([77,84,104,100,0,0,0,6,0,0,0,1,1,224,
+            77,84,114,107,0,0,0,track.length,...track]).buffer;
+        const trace = await compileMidiToSidTrace(midi, { coupledEffects: false });
+        const p = processor(kind);
+        send(p,'MASTER',dry); send(p,'MODEL','8580');
+        send(p,'DATA',{events:trace.events,clock:985248}); send(p,'PLAY',true);
+        const [left,right] = block(p,57600);
+        assert.ok(energy(left.subarray(2400,4800)) > 0.01);
+        assert.ok(energy(left.subarray(26400,31200)) > 0.01);
+        // Waveform output stops immediately; HIFI's DC-blocking filters retain
+        // transient memory. Measure settled silence, not their expected tail.
+        assert.ok(energy(left.subarray(19200,21600)) < 1e-8);
+        assert.ok(energy(left.subarray(52800)) < 1e-8);
+        assert.deepEqual(left,right);
+        assert.ok(p.v.every(v=>v.ctrl===0));
+    });
     test(kind + ': DATA clears stale state; SEEK preserves long-cycle precision', () => {
         const p = processor(kind);
         send(p, 'DATA', { events: note, clock: 985248 });

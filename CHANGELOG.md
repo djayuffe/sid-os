@@ -12,6 +12,9 @@ All notable changes to SID OS are documented here.
 
 ### Fixed
 
+- Avoided repeated sorting of unchanged dense MIDI note pools and quadratic arpeggio pitch deduplication; added exact pre-optimization trace fixtures for both reduction modes.
+- Fixed percussion panic affecting melodic voice 3, same-cycle voice restoration after drum mute, active-drum expression, stale percussion key identities, release-tail mute and per-note pressure reset.
+- Enforced MIDI file/event limits in the conversion API, including ignored metadata/SysEx; added controller regressions and MIDI-to-audio tests through both worklet engines.
 - Corrected SID oscillator/ring/triangle math, envelope timing, voice-3 filter routing, stereo pan/solo, long seeks, reset isolation, and oversampled RMS metering.
 - Replaced the no-op offline mastering fallback with the shared worklet DSP kernel; connected compressor/EQ/DC/output controls and corrected limiter delay, ceiling and reset.
 - Fixed mono WAV encoding, offline frame duration, stereo export, final resampler lookahead and asynchronous error handling.

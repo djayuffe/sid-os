@@ -24,10 +24,10 @@ const midiNoteToSwmByte = (noteStr: string): number => {
     return val;
 };
 
-const parseCmd = (cmdStr: string): { fx: number, param: number } | null => {
-    if (cmdStr === "..." || cmdStr.length < 1) return null;
+const parseCmd = (cmdStr: string, parameter: string): { fx: number, param: number } | null => {
+    if (/^\.*$/.test(cmdStr)) return null;
     const type = cmdStr.charAt(0);
-    const valStr = cmdStr.length >= 3 ? cmdStr.substring(1) : "00";
+    const valStr = /^[0-9a-f]{2}$/i.test(parameter) ? parameter : cmdStr.length >= 3 ? cmdStr.substring(1) : "00";
     const val = parseInt(valStr, 16);
     const safeVal = isNaN(val) ? 0 : val;
 
@@ -85,7 +85,7 @@ export const generateSwmFile = (project: TrackerProject): Uint8Array => {
                   : { note: '---', inst: 0, cmd: '...', val: '..' };
                 const noteByte = midiNoteToSwmByte(row.note);
                 const instByte = row.inst & 0x3F;
-                const fxData = parseCmd(row.cmd);
+                const fxData = parseCmd(row.cmd, row.val);
 
                 const hasNote = noteByte !== 0; 
                 const hasInst = instByte > 0;

@@ -1,19 +1,61 @@
 
-import { TrackerProject, ParsedTrace, TrackerRow, SidHeader, TrackerInstrument } from '../types';
+import { TrackerProject, ParsedTrace, SidEvent } from '../types';
 import { midiNoteToFreq } from './sidService';
 
 export const validateProject = (json: any): TrackerProject => {
-    if (!json || typeof json !== 'object') throw new Error("Invalid JSON");
+    if (!json || typeof json !== 'object' || Array.isArray(json)) throw new Error("Invalid JSON");
     if (json.frameRate !== undefined && (!Number.isFinite(json.frameRate) || json.frameRate <= 0)) {
         throw new Error('Project frame rate must be a positive number');
     }
     
+    for (const key of ['instruments', 'patterns', 'subtunes', 'chordTable', 'tempoTable']) {
+        if (json[key] !== undefined && !Array.isArray(json[key])) throw new Error(`Project ${key} must be an array`);
+    }
+    const integer = (value: unknown, max = Number.MAX_SAFE_INTEGER) =>
+        Number.isSafeInteger(value) && (value as number) >= 0 && (value as number) <= max;
+    const uniqueIds = (items: any[], name: string) => {
+        const ids = new Set<number>();
+        for (const item of items) {
+            if (!item || !integer(item.id) || ids.has(item.id)) throw new Error(`Invalid or duplicate ${name} ID`);
+            ids.add(item.id);
+        }
+    };
+    uniqueIds(json.instruments ?? [], 'instrument');
+    uniqueIds(json.patterns ?? [], 'pattern');
+    uniqueIds(json.subtunes ?? [], 'subtune');
     if (Array.isArray(json.instruments)) {
         json.instruments.forEach((inst: any, idx: number) => {
-            if (inst.attack > 15 || inst.decay > 15 || inst.sustain > 15 || inst.release > 15) {
+            if (![inst.attack, inst.decay, inst.sustain, inst.release].every(v => integer(v, 15))) {
                 throw new Error(`Instrument ${idx}: ADSR values must be 0-15`);
             }
+            if (!integer(inst.waveform, 255) || !integer(inst.pulseWidth, 4095) || typeof inst.name !== 'string') {
+                throw new Error(`Instrument ${idx}: invalid waveform, pulse width or name`);
+            }
         });
+    }
+    for (const pattern of json.patterns ?? []) {
+        if (!Array.isArray(pattern.rows) || pattern.rows.length > 64) throw new Error('Pattern must contain at most 64 rows');
+        for (const row of pattern.rows) {
+            if (!Array.isArray(row) || row.length > 3) throw new Error('Pattern row must contain at most three voices');
+            for (const cell of row) {
+                if (!cell || typeof cell.note !== 'string' ||
+                    !/^(---|===|(?:C-|C#|D-|D#|E-|F-|F#|G-|G#|A-|A#|B-)(?:[0-9]|10))$/.test(cell.note) ||
+                    !integer(cell.inst) || typeof cell.cmd !== 'string' || !/^(\.{1,3}|[0-9A-Z])$/.test(cell.cmd) ||
+                    typeof cell.val !== 'string' || !/^(\.\.|[0-9A-Fa-f]{2})$/.test(cell.val) ||
+                    typeof cell.vol !== 'string' || !/^(\.\.|[0-7][0-9A-Fa-f])$/.test(cell.vol)) {
+                    throw new Error('Invalid tracker cell');
+                }
+            }
+        }
+    }
+    for (const subtune of json.subtunes ?? []) {
+        if (!Array.isArray(subtune.orderList) || !subtune.orderList.every(id => integer(id))) throw new Error('Invalid order list');
+        if (subtune.loopPosition !== undefined && (!integer(subtune.loopPosition) || subtune.loopPosition >= subtune.orderList.length)) {
+            throw new Error('Invalid sequence loop position');
+        }
+    }
+    for (const field of ['title', 'author', 'released']) {
+        if (json.meta?.[field] !== undefined && typeof json.meta[field] !== 'string') throw new Error(`Invalid project ${field}`);
     }
 
     const project: TrackerProject = {
@@ -22,9 +64,10 @@ export const validateProject = (json: any): TrackerProject => {
             author: json.meta?.author || "Unknown",
             released: json.meta?.released || ""
         },
-        instruments: Array.isArray(json.instruments) ? json.instruments : [],
-        patterns: Array.isArray(json.patterns) ? json.patterns : [],
-        subtunes: Array.isArray(json.subtunes) ? json.subtunes : [],
+        instruments: (json.instruments ?? []).map(inst => ({ ...inst })),
+        patterns: (json.patterns ?? []).map(pattern => ({ ...pattern, rows: Array.from({ length: 64 }, (_, r) =>
+            Array.from({ length: 3 }, (_, c) => ({ ...(pattern.rows[r]?.[c] ?? { note: '---', inst: 0, vol: '..', cmd: '...', val: '..' }) }))) })),
+        subtunes: (json.subtunes ?? []).map(subtune => ({ ...subtune, orderList: [...subtune.orderList] })),
         chordTable: Array.isArray(json.chordTable) ? json.chordTable : [],
         tempoTable: Array.isArray(json.tempoTable) ? json.tempoTable : [],
         frameRate: json.frameRate ?? 50,
@@ -49,8 +92,9 @@ export const renderProjectToTrace = (project: TrackerProject, clock: number): Pa
     if (!Number.isFinite(fps) || fps <= 0 || !Number.isFinite(clock) || clock <= 0) {
         throw new Error('Project rendering requires a positive frame rate and SID clock');
     }
+    project = validateProject(project);
     const frames: Uint8Array[] = [];
-    const events: any[] = [];
+    const events: SidEvent[] = [];
     // Frame speed is an integer row length. Clamp here as well as during JSON
     // validation because callers can construct TrackerProject objects directly.
     const rawSpeed = project.frameSpeed;
@@ -58,6 +102,10 @@ export const renderProjectToTrace = (project: TrackerProject, clock: number): Pa
         ? Math.max(1, Math.min(31, Math.round(rawSpeed as number)))
         : 6;
     const subtune = project.subtunes[0];
+    const frameCount = subtune.orderList.length * 64 * speed;
+    if (frameCount > 100_000 || clock / fps < 1 || !Number.isSafeInteger(Math.floor(frameCount * clock / fps))) {
+        throw new Error('Project exceeds rendering limits (100,000 frames, at least one SID cycle per frame)');
+    }
     
     // Channels state
     const channels = [0, 1, 2].map(() => ({
@@ -67,6 +115,7 @@ export const renderProjectToTrace = (project: TrackerProject, clock: number): Pa
         freq: 0, 
         targetFreq: 0, 
         glideSpeed: 0, 
+        slide: 0,
         gate: false, 
         trigger: false, // Triggers Hard Restart sequence
         pw: 0, 
@@ -79,6 +128,7 @@ export const renderProjectToTrace = (project: TrackerProject, clock: number): Pa
 
     const pushFrame = (frameInRow: number, globalCycle: number) => {
         const regs = new Array(25).fill(0);
+        const gateOns: SidEvent[] = [];
         
         const triggeredChannels = new Set<number>();
         channels.forEach((ch, i) => {
@@ -86,6 +136,7 @@ export const renderProjectToTrace = (project: TrackerProject, clock: number): Pa
             const inst = project.instruments.find(ins => ins.id === ch.activeInstId);
             
             // Portamento Logic
+            ch.freq = Math.max(0, Math.min(65535, ch.freq + ch.slide));
             if (ch.glideSpeed > 0) {
                 if (Math.abs(ch.freq - ch.targetFreq) > ch.glideSpeed) {
                     if (ch.freq < ch.targetFreq) ch.freq += ch.glideSpeed;
@@ -119,16 +170,14 @@ export const renderProjectToTrace = (project: TrackerProject, clock: number): Pa
                 
                 let wf = ch.waveformOverride !== -1 ? ch.waveformOverride : inst.waveform;
                 
-                // --- MICRO-TIMING GATE LOGIC ---
-                // Instead of holding Gate OFF for a full frame, we schedule sub-cycle events.
+                // Retrigger within this frame; this is not a cycle-exact SID hard restart.
                 if (ch.trigger) {
                     triggeredChannels.add(i);
-                    // 1. Queue Gate OFF at current cycle (Reset Envelope)
+                    // Configure frequency/ADSR between the gate edges.
                     events.push({ cycles: globalCycle, reg: off + 4, val: wf & 0xFE });
                     
-                    // 2. Queue Gate ON at cycle + 45 (Trigger Attack)
-                    // This creates a ~45us gap, enough for the envelope detector to reset
-                    events.push({ cycles: globalCycle + 45, reg: off + 4, val: wf | 0x01 });
+                    const gateDelay = Math.min(45, Math.max(0, Math.floor(clock / fps) - 1));
+                    gateOns.push({ cycles: globalCycle + gateDelay, reg: off + 4, val: wf | 0x01 });
                     
                     // 3. For the visual frame dump, show the final state (ON)
                     regs[off + 4] = wf | 0x01;
@@ -159,26 +208,11 @@ export const renderProjectToTrace = (project: TrackerProject, clock: number): Pa
             const isCtrl = (r === 4 || r === 11 || r === 18);
             const chIdx = Math.floor(r/7);
             
-            // Note: ch.trigger was reset to false above, so we can't use it here directly.
-            // But standard loop pushes are safe because the events above are earlier/later 
-            // in the sort order if we use the same cycle?
-            // Actually, we should just push everything. The specific trigger events 
-            // at T+0 and T+45 will override this T+0 event if they come after, 
-            // or interleave. To be safe, we rely on the specific events pushed above.
-            
-            // Optimized: We pushed T+0 OFF and T+45 ON.
-            // If we push T+0 ON here (from regs), it might conflict.
-            // So we skip pushing Ctrl reg if that channel had a trigger this frame.
-            // But we cleared the flag. Let's simplfy: The trigger logic handled the events.
-            // We only push registers that ARENT affected by micro-timing here?
-            // No, easiest is to push everything and let the player handle it, 
-            // but duplications at T=0 might be messy.
-            
-            // Standard approach:
             if (!isCtrl || !triggeredChannels.has(chIdx)) {
                 events.push({ cycles: globalCycle, reg: r, val: regs[r] });
             }
         }
+        events.push(...gateOns);
     };
 
     let frameIndex = 0;
@@ -187,6 +221,7 @@ export const renderProjectToTrace = (project: TrackerProject, clock: number): Pa
     for (const patId of subtune.orderList) {
         const pattern = project.patterns.find(p => p.id === patId);
         for (let r = 0; r < 64; r++) {
+            channels.forEach(ch => { ch.slide = 0; });
             const rowData = pattern ? pattern.rows[r] : null;
             if (rowData) {
                 rowData.forEach((cell, chIdx) => {
@@ -194,14 +229,14 @@ export const renderProjectToTrace = (project: TrackerProject, clock: number): Pa
                     if (cell.inst > 0) {
                         ch.activeInstId = cell.inst;
                         const inst = project.instruments.find(i => i.id === cell.inst);
-                        if (inst) ch.pw = inst.pulseWidth;
+                        if (inst) { ch.pw = inst.pulseWidth; ch.waveformOverride = -1; }
                     }
                     if (cell.note === '===') ch.gate = false;
                     else if (cell.note !== '---') {
                         const notes = ["C-", "C#", "D-", "D#", "E-", "F-", "F#", "G-", "G#", "A-", "A#", "B-"];
-                        const midi = (parseInt(cell.note.substring(2))+1)*12 + notes.indexOf(cell.note.substring(0,2));
+                        const midi = parseInt(cell.note.substring(2), 10)*12 + notes.indexOf(cell.note.substring(0,2));
                         const newFreq = midiNoteToFreq(midi, clock);
-                        if (cell.cmd === '1' || cell.cmd === '2' || cell.cmd === '3') {
+                        if (cell.cmd === '3' && ch.gate) {
                             ch.targetFreq = newFreq;
                             ch.glideSpeed = parseInt(cell.val, 16) || 10;
                         } else {
@@ -214,9 +249,19 @@ export const renderProjectToTrace = (project: TrackerProject, clock: number): Pa
                         }
                     }
                     const val = parseInt(cell.val, 16) || 0;
-                    if (cell.cmd === 'F') cutoff = Math.round((val / 255) * 2047);
+                    if (cell.cmd === '1' || cell.cmd === '2') {
+                        ch.slide = (cell.cmd === '1' ? 1 : -1) * val * 2;
+                        ch.glideSpeed = 0;
+                    }
+                    if (cell.cmd === 'F') cutoff = val << 3;
+                    if (cell.cmd === 'R') { resonance = val >> 4; filterRoute = val & 0xF; }
+                    if (cell.cmd === 'T') { filterMode = val >> 4; volume = val & 0xF; }
+                    if (cell.cmd === 'E') ch.pw = val << 4;
                     if (cell.cmd === 'C') volume = val & 0xF;
-                    if (cell.cmd === 'W') ch.waveformOverride = (val & 0xF) << 4;
+                    if (cell.cmd === 'W') {
+                        const inst = project.instruments.find(i => i.id === ch.activeInstId);
+                        ch.waveformOverride = (val & 0xF0) | ((ch.waveformOverride >= 0 ? ch.waveformOverride : inst?.waveform ?? 0) & 0x0E);
+                    }
                     if (cell.cmd === '0') { ch.arpeggioX = (val >> 4); ch.arpeggioY = (val & 0xF); }
                 });
             }
@@ -227,5 +272,7 @@ export const renderProjectToTrace = (project: TrackerProject, clock: number): Pa
         }
     }
 
+    // Stable sorting preserves same-cycle gate-off/configuration ordering.
+    events.sort((a, b) => a.cycles - b.cycles);
     return { header: { clock, fps, song: project.meta.title }, frames, events };
 };

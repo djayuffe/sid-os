@@ -48,6 +48,9 @@ export const traceToTrackerProject = async (trace: ParsedTrace): Promise<Tracker
     }));
 
     let currentPatternRows: TrackerRow[][] = [];
+    // Compare with commands actually emitted, not merely the preceding frame:
+    // a busy effect column must not permanently discard a filter change.
+    const emittedFilter = { T: 0x0F, R: 0, F: 0 };
 
     const createEmptyRow = (): TrackerRow[] => {
         const row: TrackerRow[] = [];
@@ -69,24 +72,8 @@ export const traceToTrackerProject = async (trace: ParsedTrace): Promise<Tracker
         const resRoute = frame[23];
         const modeVol = frame[24];
         
-        const prevFrame = f > 0 ? trace.frames[f-1] : null;
-        const prevFc = prevFrame ? ((prevFrame[21] & 7) | (prevFrame[22] << 3)) : fc;
-        const prevResRoute = prevFrame ? prevFrame[23] : resRoute;
-        const prevModeVol = prevFrame ? prevFrame[24] : modeVol;
-
-        let globalFilterCmd = "";
-        let globalFilterVal = "..";
-
-        if ((modeVol & 0xF0) !== (prevModeVol & 0xF0)) {
-            globalFilterCmd = "T";
-            globalFilterVal = modeVol.toString(16).toUpperCase().padStart(2,'0');
-        } else if (resRoute !== prevResRoute) {
-            globalFilterCmd = "R";
-            globalFilterVal = resRoute.toString(16).toUpperCase().padStart(2,'0');
-        } else if (Math.abs(fc - prevFc) > 10) {
-            globalFilterCmd = "F";
-            globalFilterVal = ((fc >> 3) & 0xFF).toString(16).toUpperCase().padStart(2,'0');
-        }
+        const desiredFilter = { T: modeVol, R: resRoute, F: (fc >> 3) & 0xFF };
+        const pendingFilter = (['T', 'R', 'F'] as const).filter(key => desiredFilter[key] !== emittedFilter[key]);
 
         const rowData: TrackerRow[] = [];
         for (let v = 0; v < 3; v++) {
@@ -205,10 +192,11 @@ export const traceToTrackerProject = async (trace: ParsedTrace): Promise<Tracker
                 }
             }
             
-            if (globalFilterCmd !== "" && cmd === "...") {
-                cmd = globalFilterCmd;
-                val = globalFilterVal;
-                globalFilterCmd = "";
+            if (pendingFilter.length && cmd === "...") {
+                const key = pendingFilter.shift()!;
+                cmd = key;
+                val = desiredFilter[key].toString(16).toUpperCase().padStart(2, '0');
+                emittedFilter[key] = desiredFilter[key];
             }
 
             state.lastGate = gate; state.lastNote = currentNoteName; state.lastFreq = freq; state.lastPw = pw; state.lastCtrl = ctrl;

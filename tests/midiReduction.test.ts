@@ -1,8 +1,65 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { createHash } from 'node:crypto';
 import { compileMidiToSidTrace } from '../services/midiSidService';
 import { selectSidNotes } from '../services/midiReductionService';
 import type { ParsedTrace } from '../types';
+
+test('percussion panic cannot retrigger a melodic note occupying voice three', async () => {
+    const trace = await run([...chord([36,60,84]),[120,0xb9,120,0],off(480,36),off(480,60),off(480,84)]);
+    const cycle = Math.round(clock / 8);
+    assert.deepEqual(trace.events.filter(e => e.cycles === cycle && [4,11,18].includes(e.reg)), []);
+});
+
+test('zero volume or expression immediately silences already-releasing filtered notes', async () => {
+    for (const cc of [7,11]) {
+        const trace = await run([[0,0xc0,19],[0,0x90,60,100],off(120,60),[144,0xb0,cc,0],[480,0xb0,cc,127]]);
+        assert.ok(at(trace,0.13)[4] & 0xf0);
+        assert.equal(at(trace,0.15)[4],0);
+        assert.equal(at(trace,0.15)[23]&7,0);
+    }
+});
+
+test('muting percussion restores the third melodic voice in the same SID cycle', async () => {
+    const trace = await run([...chord([36,60,84]),[0,0x99,49,100],[120,0xb9,11,0],
+        off(480,36),off(480,60),off(480,84)]);
+    assert.deepEqual(notesAt(trace,0.125),[36,60,84]);
+});
+
+test('reset controllers clears per-note pressure including filter release ownership', async () => {
+    const trace = await run([[0,0xc0,19],[0,0x90,60,100],[1,0xa0,60,127],[120,0xb0,121,0],off(480,60)]);
+    const base = Math.round(440*Math.pow(2,(60-69)/12)*16777216/clock);
+    assert.equal(frequency(at(trace,0.15),0),base);
+    assert.equal(frequency(at(trace,0.25),0),base);
+    assert.equal(at(trace,0.15)[21] | at(trace,0.15)[22]<<3,0x3c0);
+    const tail = await run([[0,0xc0,19],[0,0x90,60,100],[1,0xa0,60,127],
+        off(120,60),[144,0xb0,121,0],[480,0xb0,1,0]]);
+    assert.ok(at(tail,0.15)[23]&1);
+    assert.equal(at(tail,0.15)[21] | at(tail,0.15)[22]<<3,0x3c0);
+});
+
+test('percussion expression updates an active envelope without retriggering', async () => {
+    const trace = await run([[0,0x99,49,127],[120,0xb9,11,32],[240,0xb9,11,127],[480,0x89,49,0]]);
+    assert.ok((at(trace,0.13)[20]>>4) < (at(trace,0)[20]>>4));
+    assert.equal(at(trace,0.26)[20]>>4,at(trace,0)[20]>>4);
+    assert.ok(!trace.events.some(e=>e.cycles===Math.round(clock/8)&&e.reg===18));
+});
+
+test('percussion All Notes Off clears old key identities before a same-key retrigger', async () => {
+    const trace = await run([[0,0x99,36,100],[30,0xb9,123,0],[60,0x99,36,100],[90,0x89,36,0],[480,0xb9,1,0]]);
+    assert.equal(at(trace,0.10)[18]&1,0);
+});
+
+test('parser safety limits include ignored metadata and direct API file size', async () => {
+    const count = 500001;
+    const bytes = new Uint8Array(22 + count * 4);
+    bytes.set(new Uint8Array(smf([[0,0x90,60,100]])).subarray(0,22));
+    new DataView(bytes.buffer).setUint32(18,count*4);
+    for (let i=0;i<count;i++) bytes.set([0,255,1,0],22+i*4);
+    await assert.rejects(compileMidiToSidTrace(bytes.buffer),/event safety limit/);
+    await assert.rejects(compileMidiToSidTrace(new ArrayBuffer(16*1024*1024+1)),/16 MiB/);
+    await assert.rejects(run([[0,0x90,60,100],[1,255,128,0]]),/meta-event type/);
+});
 
 const clock = 985248;
 const vlq = (value: number) => {
@@ -32,6 +89,20 @@ const notesAt = (trace: ParsedTrace, seconds: number) => {
 };
 const chord = (keys: number[]): Ev[] => keys.map(key => [0, 0x90, key, 100]);
 const off = (tick: number, key: number): Ev => [tick, 0x80, key, 0];
+
+for (const [reduction, hash] of [
+    ['balanced','c223df831f2a1a0c018da8f634cccda4bc771bc912e0bef0776142a65fe8ee4b'],
+    ['arpeggio','7d11989b6c8e1cae5b8a956e4da731d10fa9b9ad7406b87be02be35848d48a3e'],
+] as const) {
+    test(reduction + ': dense held passage preserves the pre-optimization trace exactly', async () => {
+        const events: Ev[] = Array.from({length:2048},(_,i)=>[0,0x90,i%96+24,50+i%78]);
+        events.push(...Array.from({length:2048},(_,i)=>off(9600,i%96+24)));
+        const trace = await compileMidiToSidTrace(smf(events),{reduction});
+        // Includes snapshots, ordered writes and loss telemetry. Captured from
+        // the uncached implementation; no flaky wall-clock assertions in CI.
+        assert.equal(createHash('sha256').update(JSON.stringify(trace)).digest('hex'),hash);
+    });
+}
 
 test('balanced selector protects extremes and pitch-class diversity independently of note order', () => {
     const notes = [36,60,64,67,84].map((key,id) => ({ id, key, channel: 0, program: 0, velocity: 100, start: 0, down: true }));

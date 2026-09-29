@@ -1,5 +1,6 @@
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { AsyncResource } from './services/asyncResource';
 import { SidPlayer, parseTraceFile, CLOCK_PAL, CLOCK_NTSC, midiNoteToFreq } from './services/sidService';
 import { SidComposerService } from './services/sidComposerService';
 import { generateMidiFile } from './services/midiExportService';
@@ -72,6 +73,7 @@ const App: React.FC = () => {
   const importedSession = useRef<ImportedTraceSession | null>(null);
   const loadedPlayerData = useRef<{ player: SidPlayer; events: ParsedTrace['events']; clock: number; source: ParsedTrace | undefined; ready: Promise<void> } | null>(null);
   const [player, setPlayer] = useState<SidPlayer | null>(null);
+  const playerResource = useRef(new AsyncResource<SidPlayer>(value => value.destroy()));
   
   // App State
   const [isPlaying, setIsPlaying] = useState(false);
@@ -267,7 +269,20 @@ const App: React.FC = () => {
 
   // Keep imported register timing until the user actually edits the project.
   // The generated tracker is an editor view, not a replacement for the source.
-  const playbackTrace = useMemo(() => project ? selectPlaybackTrace(project, importedSession.current, clockFreq) : null, [project, clockFreq]);
+  const playbackSelection = useMemo(() => {
+      try {
+          return { trace: project ? selectPlaybackTrace(project, importedSession.current, clockFreq) : null, error: null };
+      } catch (error) {
+          return { trace: null, error };
+      }
+  }, [project, clockFreq]);
+  const playbackTrace = playbackSelection.trace;
+  useEffect(() => {
+      if (!playbackSelection.error) return;
+      player?.pause();
+      setIsPlaying(false);
+      SystemLogger.log('Tracker', `Project cannot be rendered: ${String(playbackSelection.error)}`, 'error');
+  }, [playbackSelection.error, player]);
   const synchronizePlayer = useCallback((target: SidPlayer, nextTrace: ParsedTrace, nextClock: number) => {
       const previous = loadedPlayerData.current;
       if (previous?.player === target && previous.events === nextTrace.events && previous.clock === nextClock) return previous.ready;
@@ -293,31 +308,33 @@ const App: React.FC = () => {
   }, [playbackTrace, clockFreq, player, synchronizePlayer]);
 
   useEffect(() => {
-      if (!player) return;
-      player.pause();
-      player.destroy();
       setPlayer(null);
       setIsPlaying(false);
-      SystemLogger.log('Audio', 'Audio engine selection changed; initialize playback again to use the selected engine.', 'info');
+      return () => {
+          playerResource.current.reset();
+          loadedPlayerData.current = null;
+      };
   }, [engineType]);
 
   const initPlayer = async () => {
-      // Return existing player if already initialized to prevent duplication
-      if (player) return player;
-      
-      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
-      const p = new SidPlayer(ctx);
-      
-      // CRITICAL: Await initialization to prevent race conditions with AudioWorklet
       try {
-          await p.init(engineType);
-          p.setModel(sidModel);
-          p.setMasteringParams(masteringParams);
-          p.setMixerParams(mixerParams);
-          setPlayer(p);
+          const p = await playerResource.current.get(async () => {
+              const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+              const created = new SidPlayer(ctx);
+              try {
+                  await created.init(engineType);
+                  created.setModel(sidModel);
+                  created.setMasteringParams(masteringParams);
+                  created.setMixerParams(mixerParams);
+                  return created;
+              } catch (error) {
+                  created.destroy();
+                  throw error;
+              }
+          });
+          if (p) setPlayer(p);
           return p;
       } catch (err) {
-          p.destroy();
           SystemLogger.log('Audio', 'Audio engine initialization failed.', 'error', err);
           return null;
       }
@@ -464,6 +481,7 @@ const App: React.FC = () => {
   
   const togglePlay = async () => {
       try {
+          if (playbackSelection.error) throw playbackSelection.error;
           let p = player;
           if (!p) {
               p = await initPlayer();
@@ -474,7 +492,8 @@ const App: React.FC = () => {
               setIsPlaying(false);
           } else {
               const nextTrace = playbackTrace || traceData;
-              if (nextTrace) await synchronizePlayer(p, nextTrace, nextTrace.header.clock || clockFreq);
+              if (!nextTrace) return;
+              await synchronizePlayer(p, nextTrace, nextTrace.header.clock || clockFreq);
               await p.play();
               setIsPlaying(true);
           }

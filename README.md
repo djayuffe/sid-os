@@ -147,6 +147,9 @@ to produce a downloadable WAV without depending on live transport state.
 
 `services/trackerService.ts` converts traces into tracker projects. `services/editorService.ts` edits instruments, pattern cells, sequences, transpose operations, and clear operations without mutating the existing project. `services/projectLoaderService.ts` validates saved projects and renders project data back into a trace. `services/swmTableService.ts` maintains chord and tempo tables used by the SWM workflow.
 
+See [tracker rendering and audit notes](docs/TRACKER_RENDERING.md) for the note
+convention, supported commands, safety limits, and remaining transcription limitations.
+
 ### Instruments and performance controls
 
 The **Dr.SID** workspace uses `DrSid` and `DrSidService` for drum banks, patterns, patch validation, and persistence. The **Arp Synth** workspace uses `ArpPatchService`, factory presets, cable/routing data, CC mapping, on-screen keyboard controls, and optional Web MIDI input. `inputService.ts` provides shared keyboard and tracker editing hooks.

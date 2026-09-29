@@ -65,6 +65,12 @@ reuse. A new note may truncate a tail when all three oscillators are occupied.
 | CC 120 / 123 / 121 | Immediate channel silence / notes-off honoring melodic pedals / controller reset |
 
 Reset Controllers preserves program, channel volume and registered tuning.
+It clears both channel and per-note pressure, including retained release-tail
+filter state. Zero volume/expression suppresses melodic release tails as well
+as held notes. A muted drum returns its oscillator to melodic allocation in
+the same SID cycle; nonzero percussion expression updates its active envelope
+without retriggering. Percussion panic never changes a melodic voice's gate,
+and percussion All Notes Off clears outstanding key identities.
 Fine tuning uses centered 14-bit data; bend endpoints use divisors 8192 below
 center and 8191 above. Vibrato advances with **2π × Hz × elapsed seconds**,
 not radians mistaken for cycles. The control stream updates at 200 Hz, with
@@ -126,11 +132,22 @@ those events to tracker rows; keep the original trace for cycle timing.
 
 The importer rejects SMPTE timing, malformed/truncated messages, invalid tempo
 lengths and zero tempos. It stops at each End of Track marker. Safety limits:
-10 minutes of source-event timeline, approximately 500,000 stored input events,
+16 MiB per file (also enforced by the conversion API), 10 minutes of source-event
+timeline, 500,000 parsed events including ignored metadata/SysEx and End of Track,
 4,096 simultaneous melodic instances or unmatched percussion note-ons, and
 2,000,000 generated register writes. Open-ended notes are released one video
 frame after the last source channel event; conservative SID release tails are
 then drained. Conversion periodically yields to the browser event loop.
+
+Held-note selection is cached between MIDI events, percussion-capacity changes
+and arpeggio steps. The 200 Hz pitch/envelope/filter stream continues unchanged;
+it no longer sorts the full held-note pool at every update. Arpeggio pitch
+deduplication uses a set, and candidate scores are computed once per selection.
+Regression fixtures compare the complete output hash with the uncached
+implementation for a ten-second passage containing 2,048 held note instances.
+In one local run, balanced conversion fell from 1,801 to 25 ms and arpeggio
+conversion from 3,855 to 187 ms with identical traces. These are fixture-specific
+measurements, not guaranteed timings for other files or machines.
 
 ## Diagnostics and API
 
@@ -177,6 +194,9 @@ notes, FIFO/pedals, arpeggiation, controllers/tuning, coupled oscillators,
 percussion collisions, malformed metadata and reconstruction of PAL/NTSC
 snapshots from legal register writes. These automated checks do not establish
 bit-exact analog hardware fidelity or subjective listening quality.
+Audio integration tests additionally render compiled MIDI through both STD and
+HIFI worklets to verify output, expression recovery and settled silence. HIFI's
+DC-blocking filters retain a short transient after the SID waveforms are muted.
 
 - [MIDI Association controller assignments](https://midi.org/midi-1-0-control-change-messages)
 - [MOS 6581 SID datasheet reproduction](https://www.waitingforfriday.com/?p=661)
