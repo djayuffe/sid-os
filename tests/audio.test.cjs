@@ -393,3 +393,49 @@ for (const kind of ['STD', 'HIFI']) test(kind + ': paused seek publishes state a
     assert.ok(report.vRms[0] > 0);
     assert.ok(report.vRms[0] <= report.vPeaks[0] + 1e-10);
 });
+
+test('Destroy during module loading prevents a late audio node and is idempotent', async () => {
+    const old = global.AudioWorkletNode;
+    let finish, created = 0, closed = 0;
+    global.AudioWorkletNode = class { constructor() { created++; } };
+    const player = new SidPlayer({ state: 'running', destination: {},
+        audioWorklet: { addModule: () => new Promise(resolve => { finish = resolve; }) },
+        async close() { closed++; }
+    });
+    try {
+        const pending = player.init();
+        player.destroy(); player.destroy(); finish();
+        await assert.rejects(pending, /destroyed/);
+        await assert.rejects(player.init(), /destroyed/);
+        await assert.rejects(player.play(), /destroyed/);
+        await assert.rejects(player.seek(1, { mode: 'replay' }), /destroyed/);
+        assert.equal(created, 0); assert.equal(closed, 1);
+        assert.equal(player.node, null); assert.equal(player.isPlaying, false);
+        assert.equal(player.volatileSeekTarget, null);
+    } finally { global.AudioWorkletNode = old; }
+});
+
+test('Destroy while resuming prevents transport resurrection', async () => {
+    let finish;
+    const player = new SidPlayer({ state: 'suspended',
+        resume: () => new Promise(resolve => { finish = resolve; }), async close() {} });
+    const pending = player.play();
+    await Promise.resolve();
+    player.destroy(); finish();
+    await assert.rejects(pending, /destroyed/);
+    assert.equal(player.isPlaying, false);
+});
+
+for (const kind of ['STD', 'HIFI']) test(kind + ': paused live edits publish and supply follows model, not clock', () => {
+    const p = processor(kind), reports = [];
+    p.port.postMessage = message => reports.push(message);
+    send(p, 'DATA', { events: note, clock: 1022727 });
+    send(p, 'LIVE', { reg: 0xd400, val: 123 });
+    assert.equal(reports.at(-1).regs[0], 123);
+    for (const [model, supply] of [['8580', 9], ['6581', 12]]) {
+        send(p, 'MODEL', model);
+        send(p, 'PLAY', true);
+        for (let i = 0; i < 20; i++) block(p, 128);
+        assert.equal(reports.at(-1).phys.vSupply, supply);
+    }
+});

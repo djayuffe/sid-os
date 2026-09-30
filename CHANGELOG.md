@@ -14,6 +14,8 @@ All notable changes to SID OS are documented here.
 
 ### Fixed
 
+- Prevented delayed audio initialization/resume from resurrecting destroyed players; made cleanup idempotent and detached status callbacks.
+- Refreshed paused diagnostics after live register writes and made modeled SID supply voltage follow the chip model in both engines.
 - Avoided repeated sorting of unchanged dense MIDI note pools and quadratic arpeggio pitch deduplication; added exact pre-optimization trace fixtures for both reduction modes.
 - Fixed percussion panic affecting melodic voice 3, same-cycle voice restoration after drum mute, active-drum expression, stale percussion key identities, release-tail mute and per-note pressure reset.
 - Enforced MIDI file/event limits in the conversion API, including ignored metadata/SysEx; added controller regressions and MIDI-to-audio tests through both worklet engines.

@@ -424,6 +424,7 @@ class SidProcessor extends AudioWorkletProcessor {
           const reg = sidRegister(payload?.reg), val = sidByte(payload?.val);
           if (reg >= 25) throw new Error('SID readback registers are read-only');
           this.write(reg,val);
+          if (!this.ply) this.publishSnapshot();
         } else if (type === 'MIXER') {
           const mixer = sidMixer(payload), solo = mixer.voices.some(v => v.solo);
           this.masterVol = mixer.masterVolume;
@@ -544,7 +545,7 @@ class SidProcessor extends AudioWorkletProcessor {
     this.vRmsSamples += outL.length * 8;
     if (++this.sc >= 15) {
       this.updateReadbacks();
-      this.port.postMessage({ type:'STATUS', cy:this.cy, regs:Array.from(this.regs), act:Array.from(this.act), vS:this.v.map(v=>({level:v.env/255, state:v.phase, freq:v.f, pw:v.pw, ctrl:v.ctrl, phase: v.acc})), phys:{temp:30+this.vRms.reduce((a,b)=>a+b,0)/Math.max(1,this.vRmsSamples)*15, power:0.7, vSupply:12}, vPeaks:[...this.vPeaks], vRms:this.vRms.map(x=>Math.sqrt(x/Math.max(1,this.vRmsSamples))), mPeaks:[...this.mPeaks] });
+      this.port.postMessage({ type:'STATUS', cy:this.cy, regs:Array.from(this.regs), act:Array.from(this.act), vS:this.v.map(v=>({level:v.env/255, state:v.phase, freq:v.f, pw:v.pw, ctrl:v.ctrl, phase: v.acc})), phys:{temp:30+this.vRms.reduce((a,b)=>a+b,0)/Math.max(1,this.vRmsSamples)*15, power:0.7, vSupply:this.f.model === '6581' ? 12 : 9}, vPeaks:[...this.vPeaks], vRms:this.vRms.map(x=>Math.sqrt(x/Math.max(1,this.vRmsSamples))), mPeaks:[...this.mPeaks] });
       this.sc=0; this.vRmsSamples=0; this.vPeaks.fill(0); this.vRms.fill(0); this.mPeaks.fill(0);
     }
     return true;
@@ -570,10 +571,12 @@ export class SidPlayer {
   private previewNode: AudioWorkletNode | null = null;
   private previewTimer: ReturnType<typeof setTimeout> | null = null;
   private previewGeneration = 0;
+  private destroyed = false;
 
   constructor(ctx: AudioContext) { this.ctx = ctx; }
 
   async init(engineType: 'STD' | 'HIFI' = 'STD'): Promise<void> {
+    if (this.destroyed) throw new Error('SID player has been destroyed');
     if (this.readyPromise) return this.readyPromise;
     this.readyPromise = (async () => {
         const f6581 = new Array(2048).fill(0).map((_, i) => {
@@ -607,11 +610,13 @@ export class SidPlayer {
         } finally {
           URL.revokeObjectURL(url);
         }
+        if (this.destroyed) throw new Error('SID player has been destroyed');
         this.node = new AudioWorkletNode(this.ctx, procName, { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2] });
         this.processorName = procName;
         this.node.connect(this.ctx.destination);
         
         this.node.port.onmessage = (e) => {
+          if (this.destroyed) return;
           if (e.data.type === 'CONTROL_ERROR') SystemLogger.log('Audio control', e.data.message, 'error');
           if (e.data.type === 'STATUS') {
             this.volatileSeekTarget = e.data.seeking ?? null;
@@ -646,6 +651,7 @@ export class SidPlayer {
   async play() { 
       await this.readyPromise;
       if (this.ctx.state === 'suspended') await this.ctx.resume(); 
+      if (this.destroyed) throw new Error('SID player has been destroyed');
       this.isPlaying = true; 
       this.node?.port.postMessage({ type: 'PLAY', payload: true }); 
   }
@@ -654,6 +660,7 @@ export class SidPlayer {
       const request = sidSeek(cycles, options.mode);
       await this.readyPromise;
       if (request.mode === 'replay' && this.ctx.state === 'suspended') await this.ctx.resume();
+      if (this.destroyed) throw new Error('SID player has been destroyed');
       this.volatileSeekTarget = request.mode === 'replay' ? cycles : null;
       if (request.mode === 'registers') this.volatileCycles = cycles;
       this.node?.port.postMessage({ type: 'SEEK', payload: request });
@@ -711,12 +718,15 @@ export class SidPlayer {
 
   getEstimatedCycles() { return this.volatileCycles; }
   destroy() {
+      if (this.destroyed) return;
+      this.destroyed = true;
       this.isPlaying = false; this.volatileSeekTarget = null;
       this.stopAudition();
       this.node?.port.postMessage({ type: 'DISPOSE' });
       this.node?.disconnect();
+      if (this.node) this.node.port.onmessage = null;
       this.node = null;
       this.readyPromise = null;
-      if (this.ctx.state !== 'closed') void this.ctx.close();
+      if (this.ctx.state !== 'closed') void this.ctx.close().catch(error => SystemLogger.log('Audio cleanup', String(error), 'error'));
   }
 }

@@ -340,6 +340,7 @@ class HifiSidProcessor extends AudioWorkletProcessor {
           const reg = sidRegister(payload?.reg), val = sidByte(payload?.val);
           if (reg >= 25) throw new Error('SID readback registers are read-only');
           this.write(reg,val);
+          if (!this.ply) this.publishSnapshot();
         } else if (type === 'MIXER') {
           const mixer = sidMixer(payload), solo = mixer.voices.some(v => v.solo);
           this.masterVol = mixer.masterVolume;
@@ -535,7 +536,7 @@ class HifiSidProcessor extends AudioWorkletProcessor {
       this.port.postMessage({
         type: 'STATUS', cy: this.cy, regs: Array.from(this.regs), act: Array.from(this.act),
         vS: this.v.map((vv) => ({ level: vv.env / 255, state: vv.envState, freq: vv.f, pw: vv.pw, ctrl: vv.ctrl, phase: vv.acc })),
-        phys: { temp: this.currTemp, power: totalP, vSupply: this.clk === 985248 ? 12.0 : 9.0 },
+        phys: { temp: this.currTemp, power: totalP, vSupply: this.filter.model === '6581' ? 12 : 9 },
         vPeaks: [...this.vPeaks], vRms: this.vRms.map((x) => Math.sqrt(x / Math.max(1,this.vRmsSamples))), mPeaks: [...this.mPeaks]
       });
       this.sc = 0; this.vRmsSamples = 0; this.vPeaks.fill(0); this.vRms.fill(0); this.mPeaks.fill(0);
