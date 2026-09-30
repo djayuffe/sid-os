@@ -84,7 +84,7 @@ keyboard-focusable and has an accessible label.
 | System / Logo | C64-inspired system and logo visualisation. |
 | Chip Die | SID oscillator, envelope, filter-register, and silicon-state visualisation. |
 | Physical SID | Physical-model visualisation driven by trace, model, and estimated cycle position. |
-| SID Audit | Register/bus diagnostics and live health information. |
+| SID Audit | Register diagnostics, cycle position, and optional oscillator/envelope state replay with progress and cancellation. |
 | Project | Tracker metadata and project-level details. |
 | Format Docs | In-app reference for supported trace and project formats. |
 | Artwork | Album-cover viewer, local cover import, scale/position, dithering, and wallpaper mode. |
@@ -184,6 +184,7 @@ The workspace includes standard waveform display, register/chip inspection, NMOS
 
 ## Documentation
 
+- [SID Station integration](docs/SID_STATION_INTEGRATION.md) — shared control validation, memory-mapped addresses, replay seeking, adopted behaviors and limits
 - [Audio audit](docs/AUDIO_AUDIT.md) — SID/filter/mastering corrections, regression tests, export boundaries, and fidelity limits
 - [MIDI-to-SID reduction](docs/MIDI_TO_SID.md) — bass/melody preservation, arpeggiation, expression, register mapping, and honest conversion limits
 - [SID-to-MIDI export](docs/SID_TO_MIDI.md) — timing, pitch bends, controllers, regression checks, and conversion limits

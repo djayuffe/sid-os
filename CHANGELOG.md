@@ -6,6 +6,8 @@ All notable changes to SID OS are documented here.
 
 ### Added
 
+- Independent SID Station Pro-inspired playback controls: memory-mapped SID addresses, shared strict validation, and optional chunked digital-state replay seeking in both engines.
+- SID Audit replay progress/cancellation, current cycle position, and fresh OSC3/ENV3 readbacks; integration notes and control/replay regressions.
 - Musical MIDI-to-SID reduction with protected bass/melody, harmonic diversity, optional inner-voice arpeggiation, held-note restoration and per-import loss diagnostics.
 - MIDI pressure, expression, sostenuto, filter/envelope controllers and registered tuning; optional spare-oscillator ring modulation/sync and shared LP/BP/HP filter arbitration.
 - MIDI reduction settings, detailed conversion guide, and regression coverage for dense chords, drum collisions, pedals, tuning and PAL/NTSC register reconstruction.

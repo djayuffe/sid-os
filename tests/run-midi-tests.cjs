@@ -12,7 +12,7 @@ Module._load = function(specifier, parent, isMain) {
 };
 const originalJs = require.extensions['.js'];
 require.extensions['.js'] = (module, filename) => {
-  if (!filename.endsWith('/services/masteringKernel.js')) return originalJs(module, filename);
+  if (!filename.endsWith('/services/masteringKernel.js') && !filename.endsWith('/services/sidControlKernel.js')) return originalJs(module, filename);
   const source = fs.readFileSync(filename, 'utf8');
   module._compile(ts.transpileModule(source, { compilerOptions: {
     target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS

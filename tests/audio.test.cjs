@@ -73,6 +73,79 @@ function block(p, count = 128) {
 }
 const energy = a => a.reduce((sum, x) => sum + x * x, 0);
 
+for (const kind of ['STD','HIFI']) {
+    test(kind + ': malformed controls are contained and absolute SID writes work', () => {
+        const p=processor(kind), reports=[];
+        p.port.postMessage=message=>reports.push(message);
+        send(p,'DATA',{events:note,clock:985248});
+        const original=p.ev;
+        for(const [type,payload] of [['DATA',null],['DATA',{events:[{cycles:-1,reg:0,val:1}]}],
+            ['LIVE',{reg:-1,val:20}],['LIVE',{reg:0xd41b,val:255}],['MODEL','bad'],['SEEK',Infinity]]) {
+            assert.doesNotThrow(()=>send(p,type,payload));
+        }
+        assert.equal(reports.filter(r=>r.type==='CONTROL_ERROR').length,6);
+        assert.strictEqual(p.ev,original);
+        send(p,'MIXER',{});send(p,'MASK',null);send(p,'MASTER',null);
+        send(p,'LIVE',{reg:0xd400,val:55});assert.equal(p.regs[0],55);
+        assert.equal(p.process([],[]),true);
+        send(p,'PLAY',true);block(p);
+    });
+    test(kind + ': chunked replay matches oscillator/envelope state and includes boundary writes', () => {
+        const reference=processor(kind), replay=processor(kind);
+        const events=[...note,...note.filter(e=>e.reg<7).map(e=>({...e,reg:e.reg+14})),
+            {cycles:3000,reg:18,val:0x14},{cycles:4500,reg:18,val:0x15}];
+        send(reference,'DATA',{events,clock:985248});send(reference,'PLAY',true);block(reference,512);
+        const target=reference.cy;
+        const boundary={cycles:target,reg:20,val:0xa0};
+        reference.write(boundary.reg,boundary.val);
+        send(replay,'DATA',{events:[...events,boundary],clock:985248});
+        send(replay,'SEEK',{cycles:target,mode:'replay'});
+        let turns=0;
+        while(replay.seekTarget!==null) {
+            const oldCycle=replay.cy;
+            const [l,r]=block(replay);
+            assert.equal(energy(l)+energy(r),0);
+            assert.ok(replay.cy-oldCycle<=4096);
+            assert.ok(++turns<10);
+        }
+        assert.ok(turns>1);
+        for(let i=0;i<3;i++) for(const key of ['acc','env','lfsr','f','pw','ctrl','ad','sr']) {
+            assert.equal(replay.v[i][key],reference.v[i][key],key);
+        }
+        assert.equal(replay.regs[20],0xa0);
+        assert.equal(replay.ncQ,BigInt(target)<<32n);
+        assert.equal(replay.regs[28],replay.v[2].env);
+        assert.equal(replay.regs[27],Math.floor(replay.v[2].getWave(replay.v[1].acc)/16)&255);
+    });
+    test(kind + ': new seeks and DATA cancel replay; no-wave OSC3 is zero', () => {
+        const p=processor(kind);
+        send(p,'DATA',{events:note,clock:985248});
+        send(p,'SEEK',{cycles:100000,mode:'replay'});block(p);
+        send(p,'SEEK',2**32+7);assert.equal(p.seekTarget,null);assert.equal(p.cy,2**32+7);
+        assert.equal(p.regs[27],0);
+        send(p,'SEEK',{cycles:100000,mode:'replay'});block(p);
+        send(p,'DATA',{events:[],clock:985248});assert.equal(p.seekTarget,null);assert.equal(p.cy,0);
+        const before=p.cy;
+        send(p,'SEEK',{cycles:10000001,mode:'replay'});assert.equal(p.cy,before);
+        assert.equal(p.regs[27],0);assert.equal(p.regs[28],0);
+    });
+}
+test('SidPlayer exposes safe Station-compatible controls without truncating long events', async () => {
+    const p=new SidPlayer({state:'running'}), messages=[];
+    p.node={port:{postMessage:m=>messages.push(m)}};
+    await p.setData([{cycles:2**32+5,reg:0xd404,val:0x21}]);
+    assert.equal(messages.at(-1).payload.events.at(-1).cycles,2**32+5);
+    assert.equal(messages.at(-1).payload.events.at(-1).reg,4);
+    p.liveWrite(0xd418,15); assert.equal(messages.at(-1).payload.reg,24);
+    assert.throws(()=>p.liveWrite(0xd41c,1),/read-only/);
+    p.volatileRegs[27]=73;assert.equal(p.getRegister(0xd41b),73);
+    await p.setSpeed(2); assert.deepEqual(messages.at(-1),{type:'SPEED',payload:2});
+    await p.seek(100,{mode:'replay'});assert.equal(p.volatileSeekTarget,100);
+    await p.seek(2**32+5);assert.equal(p.volatileCycles,2**32+5);
+    await assert.rejects(p.seek(10000001,{mode:'replay'}));
+    await assert.rejects(p.setModel('bad'));
+});
+
 for (const kind of ['STD', 'HIFI']) {
     test(kind + ': compiled MIDI is audible and channel silence closes actual DSP voices', async () => {
         // Program 16, held C/E/G, expression zero at tick 120, restore at

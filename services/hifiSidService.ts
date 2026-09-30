@@ -1,5 +1,6 @@
 
 import { MASTERING_DSP_CODE } from './masteringDsp';
+import { SID_CONTROL_CODE } from './sidPlaybackControls';
 
 // Helper to strip imports for worklet injection
 function stripModuleSyntax(js: string): string {
@@ -16,6 +17,7 @@ export function generateHifiWorkletCode(): string {
   return `
 (function(){
 ${mastering}
+${SID_CONTROL_CODE}
 
 const F6581 = __F6581__;
 const F8580 = __F8580__;
@@ -313,39 +315,46 @@ class HifiSidProcessor extends AudioWorkletProcessor {
     this.sc = 0; this.vPeaks = [0, 0, 0]; this.vRms = [0, 0, 0]; this.mPeaks = [0, 0]; this.vRmsSamples = 0;
     this.currTemp = 28.0; this.ambientTemp = 28.0;
 
+    this.seekTarget = null; this.seekReports = 0;
     this.port.onmessage = (e) => {
       const { type, payload } = e.data || {};
-      if (type === 'DISPOSE') { this.stopped = true; return; }
-      if (type === 'DATA') { 
-          this.ev = payload.events || []; 
-          this.clk = payload.clock || 985248;
-          this.resetState(0);
-      } 
-      else if (type === 'PLAY') { 
-          this.ply = !!payload; 
-      } 
-      else if (type === 'MODEL') { 
+      try {
+        if (type === 'DISPOSE') { this.stopped = true; return; }
+        if (type === 'DATA') {
+          const events = sidEvents(payload?.events), clock = sidClock(payload?.clock);
+          this.ev = events; this.clk = clock; this.resetState(0);
+        } else if (type === 'PLAY') this.ply = payload === true;
+        else if (type === 'SEEK') {
+          const request = typeof payload === 'object' && payload !== null
+            ? sidSeek(payload.cycles,payload.mode) : sidSeek(payload);
+          this.resetState(request.cycles,request.mode === 'replay');
+        } else if (type === 'SPEED') this.spd = sidSpeed(payload);
+        else if (type === 'MODEL') {
+          if (payload !== '6581' && payload !== '8580') throw new Error('Invalid SID model');
           this.filter.model = payload; this.filterR.model = payload;
-          this.v.forEach((v) => (v.model = payload));
-          this.m.setModel(payload); 
-      } 
-      else if (type === 'MASTER') { this.m.updateParams(payload); } 
-      else if (type === 'MASK') { this.voiceMask = payload; } 
-      else if (type === 'MIXER') { const solo = payload.voices.some(v => v.solo);
-          this.masterVol = Number.isFinite(payload.masterVolume) ? Math.max(0, Math.min(2, payload.masterVolume)) : 0.5;
-          payload.voices.forEach((v,i) => {
-            this.mixerGains[i] = v.muted || (solo && !v.solo) ? 0 : (Number.isFinite(v.volume) ? Math.max(0, Math.min(2,v.volume)) : 1);
-            this.mixerPans[i] = Number.isFinite(v.pan) ? Math.max(-1, Math.min(1,v.pan)) : 0;
-          }); }
-      else if (type === 'LIVE') { this.write(payload.reg, payload.val); } 
-      else if (type === 'SPEED') { this.spd = Number.isFinite(payload) ? Math.max(0.01, Math.min(4,payload)) : 1; }
-      else if (type === 'SEEK') {
-        this.resetState(payload);
+          this.v.forEach(v => v.model = payload); this.m.setModel(payload);
+        } else if (type === 'MASTER') {
+          if (payload && typeof payload === 'object' && !Array.isArray(payload)) this.m.updateParams(payload);
+        } else if (type === 'MASK') this.voiceMask = sidMask(payload);
+        else if (type === 'LIVE') {
+          const reg = sidRegister(payload?.reg), val = sidByte(payload?.val);
+          if (reg >= 25) throw new Error('SID readback registers are read-only');
+          this.write(reg,val);
+        } else if (type === 'MIXER') {
+          const mixer = sidMixer(payload), solo = mixer.voices.some(v => v.solo);
+          this.masterVol = mixer.masterVolume;
+          mixer.voices.forEach((v,i) => {
+            this.mixerGains[i] = v.muted || (solo && !v.solo) ? 0 : v.volume;
+            this.mixerPans[i] = v.pan;
+          });
+        }
+      } catch (error) {
+        this.port.postMessage({ type: 'CONTROL_ERROR', message: String(error.message || error) });
       }
     };
   }
 
-  resetState(cycle) {
+  resetState(cycle, replay = false) {
     const target = Number.isSafeInteger(cycle) && cycle >= 0 ? cycle : 0;
     const model = this.filter.model;
     this.filter = new Filter(); this.filterR = new Filter();
@@ -354,17 +363,49 @@ class HifiSidProcessor extends AudioWorkletProcessor {
     this.m.reset(); this.dcL = new DualDCNeutralizer(); this.dcR = new DualDCNeutralizer();
     this.regs.fill(0); this.act.fill(0); this.vPeaks.fill(0); this.vRms.fill(0); this.mPeaks.fill(0); this.sc = 0; this.vRmsSamples = 0;
     this.ei = 0;
-    while (this.ei < this.ev.length && this.ev[this.ei].cycles <= target) {
+    const registerTarget = replay ? 0 : target;
+    while (this.ei < this.ev.length && this.ev[this.ei].cycles <= registerTarget) {
       const e = this.ev[this.ei++]; this.write(e.reg,e.val);
     }
-    this.cy = target; this.ncQ = BigInt(target) << 32n;
-    // A paused seek must update the UI even though the audio callback is silent.
+    this.cy = registerTarget; this.ncQ = BigInt(registerTarget) << 32n;
+    this.seekTarget = replay && target > 0 ? target : null; this.seekReports = 0;
+    this.publishSnapshot();
+  }
+  updateReadbacks() {
+    const voice = this.v[2];
+    this.regs[27] = voice.ctrl & 0xf0 ? (Math.floor(voice.getWave(this.v[1].acc) / 16) & 255) : 0;
+    this.regs[28] = voice.env & 255;
+  }
+  publishSnapshot() {
+    this.updateReadbacks();
     this.port.postMessage({ type: 'STATUS', cy: this.cy, regs: Array.from(this.regs), act: Array.from(this.act),
+      seeking: this.seekTarget,
       vS: this.v.map(v => ({ level: v.env / 255, state: v.phase ?? v.envState, freq: v.f, pw: v.pw, ctrl: v.ctrl, phase: v.acc })),
-      phys: { temp: this.currTemp ?? 30, power: 0.7, vSupply: model === '6581' ? 12 : 9 },
+      phys: { temp: this.currTemp ?? 30, power: 0.7, vSupply: this.filter.model === '6581' ? 12 : 9 },
       vPeaks: [0,0,0], vRms: [0,0,0], mPeaks: [0,0] });
   }
+  advanceSeek() {
+    const target = this.seekTarget, end = Math.min(target,this.cy + SID_REPLAY_BUDGET);
+    while (this.cy < end) {
+      while (this.ei < this.ev.length && this.ev[this.ei].cycles <= this.cy) {
+        const event = this.ev[this.ei++]; this.write(event.reg,event.val);
+      }
+      this.stepOneSidCycle(); this.cy++;
+    }
+    while (this.ei < this.ev.length && this.ev[this.ei].cycles <= this.cy) {
+      const event = this.ev[this.ei++]; this.write(event.reg,event.val);
+    }
+    this.ncQ = BigInt(this.cy) << 32n;
+    if (this.cy === target) {
+      this.seekTarget = null;
+      this.v.forEach(v => { if ('sAcc' in v) { v.sAcc = 0; v.sCnt = 0; } });
+    }
+    if (this.seekTarget === null || ++this.seekReports >= 16) {
+      this.seekReports = 0; this.publishSnapshot();
+    }
+  }
   write(r, v) {
+    if (r >= 25) return; // Readbacks are derived, not writable trace state.
     r &= 31; v &= 255;
     if (this.regs[r] !== v) this.act[r] = 255;
     this.regs[r] = v;
@@ -412,9 +453,10 @@ class HifiSidProcessor extends AudioWorkletProcessor {
 
   process(inputs, outputs) {
     if (this.stopped) return false;
-    const outL = outputs[0][0]; if (!outL) return true;
-    const outR = outputs[0][1];
+    const outL = outputs[0]?.[0]; if (!outL) return true;
+    const outR = outputs[0]?.[1];
     
+    if (this.seekTarget !== null) { this.advanceSeek(); outL.fill(0); if (outR) outR.fill(0); return true; }
     if (!this.ply) { outL.fill(0); if (outR) outR.fill(0); return true; }
     const safeClk = this.clk || 985248;
     const safeRate = typeof sampleRate !== 'undefined' ? sampleRate : 48000;
@@ -489,8 +531,7 @@ class HifiSidProcessor extends AudioWorkletProcessor {
       const quiescentP = this.clk === 985248 ? 0.85 : 0.72;
       const totalP = quiescentP + totalRms * 0.5;
       this.currTemp += (12.8 * totalP - 0.16 * (this.currTemp - this.ambientTemp)) * dt;
-      this.regs[0x1B] = (this.v[2].raw12 >> 4) & 0xFF;
-      this.regs[0x1C] = this.v[2].env & 0xFF;
+      this.updateReadbacks();
       this.port.postMessage({
         type: 'STATUS', cy: this.cy, regs: Array.from(this.regs), act: Array.from(this.act),
         vS: this.v.map((vv) => ({ level: vv.env / 255, state: vv.envState, freq: vv.f, pw: vv.pw, ctrl: vv.ctrl, phase: vv.acc })),

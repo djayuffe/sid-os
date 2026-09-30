@@ -3,6 +3,7 @@ import { ParsedTrace, SidEvent, MasteringParams, MixerParams } from '../types';
 import { MASTERING_DSP_CODE } from './masteringDsp';
 import { generateHifiWorkletCode } from './hifiSidService';
 import { SystemLogger } from './Logger';
+import { SID_CONTROL_CODE, sidEvents, sidClock, sidRegister, sidByte, sidSpeed, sidMask, sidMixer, sidSeek, type SidSeekOptions } from './sidPlaybackControls';
 
 /**
  * SID OS playback core
@@ -229,6 +230,7 @@ export function generateWorkletCode(): string {
 (function(){
 /* INJECTED DSP */
 ${MASTERING_DSP_CODE}
+${SID_CONTROL_CODE}
 
 const F6581 = __F6581__;
 const F8580 = __F8580__;
@@ -397,26 +399,46 @@ class SidProcessor extends AudioWorkletProcessor {
     this.regs = new Uint8Array(32); this.act = new Uint8Array(32);
     this.msk = [true, true, true]; this.sc=0; this.vPeaks=[0,0,0]; this.vRms=[0,0,0]; this.mPeaks=[0,0]; this.vRmsSamples = 0;
     this.mixerGains = [1.0, 1.0, 1.0]; this.mixerPans = [0,0,0]; this.masterVol = 0.5;
+    this.seekTarget = null; this.seekReports = 0;
     this.port.onmessage = (e) => {
-        const { type, payload } = e.data || {};
+      const { type, payload } = e.data || {};
+      try {
         if (type === 'DISPOSE') { this.stopped = true; return; }
-        if (type === 'DATA') { this.ev = payload.events || []; this.clk = payload.clock || 985248; this.resetState(0); }
-        else if (type === 'PLAY') { this.ply = !!payload; }
-        else if (type === 'SEEK') this.resetState(payload);
-        else if (type === 'SPEED') this.spd = Number.isFinite(payload) ? Math.max(0.01, Math.min(4, payload)) : 1;
-        else if (type === 'MODEL') { this.f.model = payload; this.fR.model = payload; this.v.forEach(v=>v.model=payload); this.m.setModel(payload); }
-        else if (type === 'MASTER') this.m.updateParams(payload);
-        else if (type === 'MASK') this.msk = payload;
-        else if (type === 'LIVE') this.write(payload.reg, payload.val);
-        else if (type === 'MIXER') { const solo = payload.voices.some(v => v.solo);
-          this.masterVol = Number.isFinite(payload.masterVolume) ? Math.max(0, Math.min(2, payload.masterVolume)) : 0.5;
-          payload.voices.forEach((v,i) => {
-            this.mixerGains[i] = v.muted || (solo && !v.solo) ? 0 : (Number.isFinite(v.volume) ? Math.max(0, Math.min(2,v.volume)) : 1);
-            this.mixerPans[i] = Number.isFinite(v.pan) ? Math.max(-1, Math.min(1,v.pan)) : 0;
-          }); }
+        if (type === 'DATA') {
+          const events = sidEvents(payload?.events), clock = sidClock(payload?.clock);
+          this.ev = events; this.clk = clock; this.resetState(0);
+        } else if (type === 'PLAY') this.ply = payload === true;
+        else if (type === 'SEEK') {
+          const request = typeof payload === 'object' && payload !== null
+            ? sidSeek(payload.cycles,payload.mode) : sidSeek(payload);
+          this.resetState(request.cycles,request.mode === 'replay');
+        } else if (type === 'SPEED') this.spd = sidSpeed(payload);
+        else if (type === 'MODEL') {
+          if (payload !== '6581' && payload !== '8580') throw new Error('Invalid SID model');
+          this.f.model = payload; this.fR.model = payload;
+          this.v.forEach(v => v.model = payload); this.m.setModel(payload);
+        } else if (type === 'MASTER') {
+          if (payload && typeof payload === 'object' && !Array.isArray(payload)) this.m.updateParams(payload);
+        } else if (type === 'MASK') this.msk = sidMask(payload);
+        else if (type === 'LIVE') {
+          const reg = sidRegister(payload?.reg), val = sidByte(payload?.val);
+          if (reg >= 25) throw new Error('SID readback registers are read-only');
+          this.write(reg,val);
+        } else if (type === 'MIXER') {
+          const mixer = sidMixer(payload), solo = mixer.voices.some(v => v.solo);
+          this.masterVol = mixer.masterVolume;
+          mixer.voices.forEach((v,i) => {
+            this.mixerGains[i] = v.muted || (solo && !v.solo) ? 0 : v.volume;
+            this.mixerPans[i] = v.pan;
+          });
+        }
+      } catch (error) {
+        this.port.postMessage({ type: 'CONTROL_ERROR', message: String(error.message || error) });
+      }
     };
   }
-  resetState(cycle) {
+
+  resetState(cycle, replay = false) {
     const target = Number.isSafeInteger(cycle) && cycle >= 0 ? cycle : 0;
     const model = this.f.model;
     this.f = new Filter(); this.fR = new Filter();
@@ -425,33 +447,53 @@ class SidProcessor extends AudioWorkletProcessor {
     this.m.reset(); this.d = new Decim(); this.dR = new Decim();
     this.regs.fill(0); this.act.fill(0); this.vPeaks.fill(0); this.vRms.fill(0); this.mPeaks.fill(0); this.sc = 0; this.vRmsSamples = 0;
     this.ei = 0;
-    while (this.ei < this.ev.length && this.ev[this.ei].cycles <= target) {
+    const registerTarget = replay ? 0 : target;
+    while (this.ei < this.ev.length && this.ev[this.ei].cycles <= registerTarget) {
       const e = this.ev[this.ei++]; this.write(e.reg,e.val);
     }
-    this.cy = target; this.ncQ = BigInt(target) << 32n;
-    // A paused seek must update the UI even though the audio callback is silent.
+    this.cy = registerTarget; this.ncQ = BigInt(registerTarget) << 32n;
+    this.seekTarget = replay && target > 0 ? target : null; this.seekReports = 0;
+    this.publishSnapshot();
+  }
+  updateReadbacks() {
+    const voice = this.v[2];
+    this.regs[27] = voice.ctrl & 0xf0 ? (Math.floor(voice.getWave(this.v[1].acc) / 16) & 255) : 0;
+    this.regs[28] = voice.env & 255;
+  }
+  publishSnapshot() {
+    this.updateReadbacks();
     this.port.postMessage({ type: 'STATUS', cy: this.cy, regs: Array.from(this.regs), act: Array.from(this.act),
+      seeking: this.seekTarget,
       vS: this.v.map(v => ({ level: v.env / 255, state: v.phase ?? v.envState, freq: v.f, pw: v.pw, ctrl: v.ctrl, phase: v.acc })),
-      phys: { temp: this.currTemp ?? 30, power: 0.7, vSupply: model === '6581' ? 12 : 9 },
+      phys: { temp: this.currTemp ?? 30, power: 0.7, vSupply: this.f.model === '6581' ? 12 : 9 },
       vPeaks: [0,0,0], vRms: [0,0,0], mPeaks: [0,0] });
   }
+  advanceSeek() {
+    const target = this.seekTarget, end = Math.min(target,this.cy + SID_REPLAY_BUDGET);
+    while (this.cy < end) {
+      while (this.ei < this.ev.length && this.ev[this.ei].cycles <= this.cy) {
+        const event = this.ev[this.ei++]; this.write(event.reg,event.val);
+      }
+      this.stepOneSidCycle(); this.cy++;
+    }
+    while (this.ei < this.ev.length && this.ev[this.ei].cycles <= this.cy) {
+      const event = this.ev[this.ei++]; this.write(event.reg,event.val);
+    }
+    this.ncQ = BigInt(this.cy) << 32n;
+    if (this.cy === target) {
+      this.seekTarget = null;
+      this.v.forEach(v => { if ('sAcc' in v) { v.sAcc = 0; v.sCnt = 0; } });
+    }
+    if (this.seekTarget === null || ++this.seekReports >= 16) {
+      this.seekReports = 0; this.publishSnapshot();
+    }
+  }
   write(r, v) {
+    if (r >= 25) return; // Readbacks are derived, not writable trace state.
     r &= 31; v &= 255; if (this.regs[r] !== v) this.act[r] = 255; this.regs[r] = v;
     if (r < 21) this.v[(r/7)|0].write(r % 7, v); else if (r < 25) { this.f.write(r,v); this.fR.write(r,v); }
   }
-  process(inputs, outputs) {
-    if (this.stopped) return false;
-    const outL = outputs[0][0], outR = outputs[0][1]; if (!outL) return true;
-    if (!this.ply) { outL.fill(0); if (outR) outR.fill(0); return true; }
-    const step = BigInt(Math.floor(((this.clk * this.spd) / sampleRate / 8) * 4294967296.0));
-
-    for (let i=0; i<outL.length; i++) {
-      let sum = 0, sumR = 0;
-      for (let s=0; s<8; s++) {
-        if (this.ply) {
-          this.ncQ += step; const target = Number(this.ncQ >> 32n);
-          while (this.cy < target) {
-            while (this.ei < this.ev.length && this.ev[this.ei].cycles <= this.cy) { this.write(this.ev[this.ei].reg, this.ev[this.ei].val); this.ei++; }
+  stepOneSidCycle() {
             const p0 = this.v[0].acc; const p1 = this.v[1].acc; const p2 = this.v[2].acc;
             const inc0 = this.v[0].f; const inc1 = this.v[1].f; const inc2 = this.v[2].f;
             let n0 = (this.v[0].ctrl & 8) ? 0 : (p0 + inc0) & 0xFFFFFF; let n1 = (this.v[1].ctrl & 8) ? 0 : (p1 + inc1) & 0xFFFFFF; let n2 = (this.v[2].ctrl & 8) ? 0 : (p2 + inc2) & 0xFFFFFF;
@@ -466,7 +508,23 @@ class SidProcessor extends AudioWorkletProcessor {
             if (this.v[1].ctrl & 0x08) this.v[1].lfsr = 0x7FFFF8; else if (b19_1) this.v[1].clockNoise();
             if (this.v[2].ctrl & 0x08) this.v[2].lfsr = 0x7FFFF8; else if (b19_2) this.v[2].clockNoise();
             this.v.forEach(x => x.stepEnv());
-            this.v[0].accumulate(n2); this.v[1].accumulate(n0); this.v[2].accumulate(n1);
+  }
+  process(inputs, outputs) {
+    if (this.stopped) return false;
+    const outL = outputs[0]?.[0], outR = outputs[0]?.[1]; if (!outL) return true;
+    if (this.seekTarget !== null) { this.advanceSeek(); outL.fill(0); if (outR) outR.fill(0); return true; }
+    if (!this.ply) { outL.fill(0); if (outR) outR.fill(0); return true; }
+    const step = BigInt(Math.floor(((this.clk * this.spd) / sampleRate / 8) * 4294967296.0));
+
+    for (let i=0; i<outL.length; i++) {
+      let sum = 0, sumR = 0;
+      for (let s=0; s<8; s++) {
+        if (this.ply) {
+          this.ncQ += step; const target = Number(this.ncQ >> 32n);
+          while (this.cy < target) {
+            while (this.ei < this.ev.length && this.ev[this.ei].cycles <= this.cy) { this.write(this.ev[this.ei].reg, this.ev[this.ei].val); this.ei++; }
+            this.stepOneSidCycle();
+            this.v[0].accumulate(this.v[2].acc); this.v[1].accumulate(this.v[0].acc); this.v[2].accumulate(this.v[1].acc);
             this.cy++;
           }
         } else {
@@ -485,8 +543,7 @@ class SidProcessor extends AudioWorkletProcessor {
     }
     this.vRmsSamples += outL.length * 8;
     if (++this.sc >= 15) {
-      this.regs[0x1B] = (this.v[2].raw12 >> 4) & 0xFF;
-      this.regs[0x1C] = this.v[2].env;
+      this.updateReadbacks();
       this.port.postMessage({ type:'STATUS', cy:this.cy, regs:Array.from(this.regs), act:Array.from(this.act), vS:this.v.map(v=>({level:v.env/255, state:v.phase, freq:v.f, pw:v.pw, ctrl:v.ctrl, phase: v.acc})), phys:{temp:30+this.vRms.reduce((a,b)=>a+b,0)/Math.max(1,this.vRmsSamples)*15, power:0.7, vSupply:12}, vPeaks:[...this.vPeaks], vRms:this.vRms.map(x=>Math.sqrt(x/Math.max(1,this.vRmsSamples))), mPeaks:[...this.mPeaks] });
       this.sc=0; this.vRmsSamples=0; this.vPeaks.fill(0); this.vRms.fill(0); this.mPeaks.fill(0);
     }
@@ -503,6 +560,7 @@ export class SidPlayer {
   volatileCycles = 0; volatileRegs: number[] = new Array(32).fill(0); volatileVoiceStates = Array(3).fill(0).map(() => ({ level: 0, state: 0, freq: 0, pw: 0, ctrl: 0, phase: 0 }));
   volatilePhysics = { temp: 36, power: 0.7, vSupply: 12.0 }; volatileVoicePeaks = [0,0,0]; volatileVoiceRms = [0,0,0]; volatileMasterPeaks = [0,0];
   ctx: AudioContext; isPlaying = false;
+  volatileSeekTarget: number | null = null;
   clk = CLOCK_PAL;
   readyPromise: Promise<void> | null = null;
   private processorName = 'sid-processor';
@@ -554,7 +612,9 @@ export class SidPlayer {
         this.node.connect(this.ctx.destination);
         
         this.node.port.onmessage = (e) => {
+          if (e.data.type === 'CONTROL_ERROR') SystemLogger.log('Audio control', e.data.message, 'error');
           if (e.data.type === 'STATUS') {
+            this.volatileSeekTarget = e.data.seeking ?? null;
             this.volatileCycles = e.data.cy; this.volatileRegs = e.data.regs;
             this.volatileVoiceStates = e.data.vS; this.volatilePhysics = e.data.phys;
             this.volatileVoicePeaks = e.data.vPeaks; this.volatileVoiceRms = e.data.vRms; this.volatileMasterPeaks = e.data.mPeaks;
@@ -565,25 +625,24 @@ export class SidPlayer {
   }
 
   async setData(ev: SidEvent[], clk?: number) {
-      await this.readyPromise; 
-      if (!Array.isArray(ev) || ev.some(e => !e || !Number.isSafeInteger(e.cycles) || e.cycles < 0 || !Number.isInteger(e.reg) || e.reg < 0 || e.reg > 31 || !Number.isInteger(e.val) || e.val < 0 || e.val > 255)) throw new Error('Invalid SID event');
-      if (clk !== undefined && (!Number.isFinite(clk) || clk < 100_000 || clk > 2_000_000)) throw new Error('Invalid SID clock');
-      const sorted = [...ev].sort((a,b) => a.cycles - b.cycles);
+      const sorted = sidEvents(ev), clock = sidClock(clk);
+      await this.readyPromise;
       // Trace formats commonly omit $D418 when it is implicit in a frame dump.
       // A fresh worklet starts at volume zero, so establish a sensible SID
       // default only when the trace does not set volume at startup itself.
       const hasInitialVolume = sorted.some(event => event.reg === SID_REG.MODE_VOL && event.cycles === 0);
       if (!hasInitialVolume) sorted.unshift({ cycles: 0, reg: SID_REG.MODE_VOL, val: 0x0F });
-      this.clk = clk || CLOCK_PAL; 
+      this.clk = clock;
       this.node?.port.postMessage({ type: 'DATA', payload: { events: sorted, clock: this.clk } }); 
   }
 
   async setPlaybackSpeed(speed: number) {
       await this.readyPromise;
-      this.node?.port.postMessage({ type: 'SPEED', payload: Number.isFinite(speed) ? Math.max(0.01, Math.min(4, speed)) : 1 });
+      this.node?.port.postMessage({ type: 'SPEED', payload: sidSpeed(speed) });
   }
   
-  async setVoiceMask(m: [boolean, boolean, boolean]) { await this.readyPromise; this.node?.port.postMessage({ type: 'MASK', payload: m }); }
+  setSpeed(speed: number) { return this.setPlaybackSpeed(speed); }
+  async setVoiceMask(m: [boolean, boolean, boolean]) { await this.readyPromise; this.node?.port.postMessage({ type: 'MASK', payload: sidMask(m) }); }
   async play() { 
       await this.readyPromise;
       if (this.ctx.state === 'suspended') await this.ctx.resume(); 
@@ -591,10 +650,18 @@ export class SidPlayer {
       this.node?.port.postMessage({ type: 'PLAY', payload: true }); 
   }
   async pause() { await this.readyPromise; this.isPlaying = false; this.node?.port.postMessage({ type: 'PLAY', payload: false }); }
-  async seek(cycles: number) { await this.readyPromise; this.node?.port.postMessage({ type: 'SEEK', payload: cycles }); }
-  async setModel(model: '6581' | '8580') { this.model = model; await this.readyPromise; this.node?.port.postMessage({ type: 'MODEL', payload: model }); }
+  async seek(cycles: number, options: SidSeekOptions = {}) {
+      const request = sidSeek(cycles, options.mode);
+      await this.readyPromise;
+      if (request.mode === 'replay' && this.ctx.state === 'suspended') await this.ctx.resume();
+      this.volatileSeekTarget = request.mode === 'replay' ? cycles : null;
+      if (request.mode === 'registers') this.volatileCycles = cycles;
+      this.node?.port.postMessage({ type: 'SEEK', payload: request });
+  }
+  getRegister(addressOrOffset: number) { return this.volatileRegs[sidRegister(addressOrOffset)] ?? 0; }
+  async setModel(model: '6581' | '8580') { if (model !== '6581' && model !== '8580') throw new Error('Invalid SID model'); this.model = model; await this.readyPromise; this.node?.port.postMessage({ type: 'MODEL', payload: model }); }
   async setMasteringParams(p: MasteringParams) { this.mastering = p; await this.readyPromise; this.node?.port.postMessage({ type: 'MASTER', payload: p }); }
-  async setMixerParams(p: MixerParams) { this.mixer = p; await this.readyPromise; this.node?.port.postMessage({ type: 'MIXER', payload: p }); }
+  async setMixerParams(p: MixerParams) { const normalized = sidMixer(p) as MixerParams; this.mixer = normalized; await this.readyPromise; this.node?.port.postMessage({ type: 'MIXER', payload: normalized }); }
 
   /** Isolated, cycle-timed audition: never changes song registers or transport. */
   async audition(registers: number[], durationMs = 350, clock = this.clk) {
@@ -636,10 +703,15 @@ export class SidPlayer {
       this.previewNode = null;
   }
   
-  liveWrite(reg: number, val: number) { this.node?.port.postMessage({ type: 'LIVE', payload: { reg, val } }); }
+  liveWrite(reg: number, val: number) {
+      const offset = sidRegister(reg), byte = sidByte(val);
+      if (offset >= 25) throw new Error('SID readback registers are read-only');
+      this.node?.port.postMessage({ type: 'LIVE', payload: { reg: offset, val: byte } });
+  }
 
   getEstimatedCycles() { return this.volatileCycles; }
   destroy() {
+      this.isPlaying = false; this.volatileSeekTarget = null;
       this.stopAudition();
       this.node?.port.postMessage({ type: 'DISPOSE' });
       this.node?.disconnect();
